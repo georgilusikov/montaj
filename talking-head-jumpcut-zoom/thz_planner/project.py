@@ -1,0 +1,129 @@
+from __future__ import annotations
+
+from typing import Any
+
+from .assembler import materialize_framing_decision
+from .planner import plan_geometry_core
+from .schema import FrameObservation, QualityMetrics, ShotState, sha256_canonical
+from .semantic_bridge import plan_transition_from_semantic_context
+from .timeline import ContentEdit, build_timeline_manifest
+from .validator import validate_manifest_pre_render
+from .when_solver import BoundaryCandidate
+
+
+def _quality(payload: dict[str, Any]) -> QualityMetrics:
+    return QualityMetrics(
+        width=int(payload["width"]),
+        height=int(payload["height"]),
+        sharpness=float(payload.get("sharpness", 1.0)),
+        noise=float(payload.get("noise", 0.0)),
+        compression=float(payload.get("compression", 0.0)),
+    )
+
+
+def _observations(items: list[dict[str, Any]]) -> list[FrameObservation]:
+    return [FrameObservation(**item) for item in items]
+
+
+def _content_edits(items: list[dict[str, Any]]) -> list[ContentEdit]:
+    return [ContentEdit(**item) for item in items]
+
+
+def _boundary_candidates(items: list[dict[str, Any]]) -> list[BoundaryCandidate]:
+    return [BoundaryCandidate(**item) for item in items]
+
+
+def plan_project(payload: dict[str, Any]) -> dict[str, Any]:
+    """Execute deterministic v1.7.1 planning from a frozen JSON-compatible payload."""
+    analysis = dict(payload.get("analysis") or {})
+    config = dict(payload.get("config") or {})
+    if "quality" not in analysis or "observations" not in analysis:
+        raise ValueError("analysis.quality and analysis.observations are required")
+
+    quality = _quality(dict(analysis["quality"]))
+    observations = _observations(list(analysis["observations"]))
+    source_type = str(config.get("source_type", "live"))
+    pace = str(config.get("pace", "neutral"))
+    intensity = str(config.get("intensity", "moderate"))
+
+    geometry = plan_geometry_core(
+        observations=observations,
+        quality=quality,
+        intensity=intensity,
+        pace=pace,
+        wide_boost=bool(config.get("wide_boost", False)),
+        wide_boost_cap=(
+            float(config["wide_boost_cap"])
+            if config.get("wide_boost_cap") is not None
+            else None
+        ),
+        window_ms=int(config.get("window_ms", 500)),
+        config_payload=config,
+    )
+
+    current_state = ShotState(str(payload.get("initial_state", ShotState.CONTEXT.value)))
+    current_scale = float(payload.get("initial_scale", 1.0))
+    if current_scale < 1.0:
+        raise ValueError("initial_scale <1.00 is forbidden")
+
+    events = sorted(
+        list(payload.get("semantic_events") or []),
+        key=lambda item: (int(item["t_ms"]), str(item.get("event_id", ""))),
+    )
+    framing = []
+    decisions: list[dict[str, object]] = []
+    for index, event in enumerate(events):
+        context = dict(event.get("context") or {})
+        transition = plan_transition_from_semantic_context(
+            context,
+            geometry_result=geometry,
+            semantic_at_ms=int(event["t_ms"]),
+            current_state=current_state,
+            current_scale=current_scale,
+            boundary_candidates=_boundary_candidates(list(event.get("boundary_candidates") or [])),
+            profile=source_type,
+            segment_start_ms=int(event.get("segment_start_ms", 0)),
+            history_penalty=dict(event.get("history_penalty") or {}),
+            pace=pace,
+        )
+        decisions.append({
+            "event_id": str(event.get("event_id", f"event_{index:04d}")),
+            "status": transition.get("status"),
+            "desired_state": transition.get("desired_state"),
+            "degraded": transition.get("degraded"),
+        })
+        if transition.get("status") != "PLANNED":
+            continue
+
+        if "requested_end_ms" not in event:
+            raise ValueError("planned semantic event requires requested_end_ms")
+        decision = materialize_framing_decision(
+            transition=transition,
+            geometry_result=geometry,
+            observations=observations,
+            quality=quality,
+            segment_id=str(event.get("segment_id", f"framing_{index:04d}")),
+            requested_end_ms=int(event["requested_end_ms"]),
+        )
+        framing.append(decision)
+        current_state = decision.state
+        current_scale = float(decision.derived.get("motion_end_scale", current_scale))
+
+    content_edits = _content_edits(list(payload.get("content_edits") or []))
+    manifest = build_timeline_manifest(
+        analysis_hash=str(geometry["analysis_hash"]),
+        config_hash=str(geometry["config_hash"]),
+        content_edits=content_edits,
+        framing_decisions=framing,
+        source_type=source_type,
+        extra_provenance={
+            "planner_input_hash": sha256_canonical(payload),
+            "geometry_output_hash": geometry["output_hash"],
+        },
+    )
+    validation = validate_manifest_pre_render(manifest, quality=quality)
+    return {
+        "manifest": manifest,
+        "decision_summary": tuple(decisions),
+        "validation": validation,
+    }
