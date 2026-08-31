@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .motion import plan_motion
-from .patterns import select_pattern
+from .patterns import select_pattern, shape_state_with_pattern
 from .schema import ShotState
 from .when_solver import BoundaryCandidate, solve_ai_when, solve_live_when
 from .why import resolve_why
@@ -30,8 +30,9 @@ def plan_transition_intent(
 ) -> dict[str, object]:
     """P0C deterministic decision core through WHY/PATTERN/WHEN/MOTION.
 
-    It intentionally stops before segment assembly/canonical crop duration. Boundary
-    candidates are masked against the temporal feasibility of the selected state.
+    WHY owns semantic intensity. PATTERN may shape that target downward into a
+    sequence but cannot increase it. Boundary candidates are then hard-masked
+    against temporal feasibility of the shaped selected state.
     """
     why = resolve_why(
         semantic_weight=semantic_weight,
@@ -44,15 +45,7 @@ def plan_transition_intent(
     if window is None:
         return {"status": "NO_WINDOW", "why": why}
 
-    desired_state = why["desired_state"]
-    selected_state = choose_available_state(window, desired_state)
-    if selected_state is None:
-        return {
-            "status": "NO_FEASIBLE_STATE",
-            "why": why,
-            "desired_state": desired_state,
-        }
-
+    semantic_desired_state = why["desired_state"]
     available_states = {item.state for item in window.get("distinct_states", [])}
     pattern = select_pattern(
         theme_tag=theme_tag,
@@ -61,6 +54,22 @@ def plan_transition_intent(
         prosody_fit=prosody,
         history_penalty=history_penalty,
     )
+    pattern_target_state, pattern_shaped = shape_state_with_pattern(
+        pattern,
+        semantic_desired_state=semantic_desired_state,
+        current_state=current_state,
+    )
+
+    selected_state = choose_available_state(window, pattern_target_state)
+    if selected_state is None:
+        return {
+            "status": "NO_FEASIBLE_STATE",
+            "why": why,
+            "desired_state": semantic_desired_state,
+            "pattern_target_state": pattern_target_state,
+            "pattern_shaped": pattern_shaped,
+            "pattern": pattern,
+        }
 
     temporally_safe = [
         candidate
@@ -79,7 +88,9 @@ def plan_transition_intent(
         return {
             "status": "NO_SAFE_BOUNDARY",
             "why": why,
-            "desired_state": desired_state,
+            "desired_state": semantic_desired_state,
+            "pattern_target_state": pattern_target_state,
+            "pattern_shaped": pattern_shaped,
             "selected_state": selected_state,
             "pattern": pattern,
         }
@@ -96,9 +107,11 @@ def plan_transition_intent(
     return {
         "status": "PLANNED",
         "why": why,
-        "desired_state": desired_state,
+        "desired_state": semantic_desired_state,
+        "pattern_target_state": pattern_target_state,
+        "pattern_shaped": pattern_shaped,
         "selected_state": selected_state,
-        "degraded": selected_state.state is not desired_state,
+        "degraded": selected_state.state is not pattern_target_state,
         "pattern": pattern,
         "when": when,
         "motion": motion,
