@@ -2,7 +2,7 @@ import unittest
 
 from thz_planner.schema import CanonicalCrop, RenderPrimitive
 from thz_render.contract import RenderKeyframe, RenderSegmentPlan
-from thz_render.ffmpeg import bind_sendcmd_file, compile_ffmpeg_segment
+from thz_render.ffmpeg import bind_sendcmd_file, compile_ffmpeg_segment, ffmpeg_program_sha256
 
 
 class FFmpegBackendTests(unittest.TestCase):
@@ -38,6 +38,40 @@ class FFmpegBackendTests(unittest.TestCase):
         bound = bind_sendcmd_file(program, "/tmp/thz_cmd.txt")
         self.assertIn("sendcmd=f=/tmp/thz_cmd.txt", bound)
         self.assertIn("scale=1080:1920:flags=lanczos", bound)
+
+    def test_renderer_program_hash_ignores_temp_file_binding(self):
+        plan = RenderSegmentPlan(
+            segment_id="ramp",
+            start_ms=0,
+            end_ms=1000,
+            primitive=RenderPrimitive.LINEAR_RAMP,
+            keyframes=(
+                RenderKeyframe(0, CanonicalCrop(0, 0, 1080, 1920)),
+                RenderKeyframe(1000, CanonicalCrop(40, 70, 1000, 1780)),
+            ),
+        )
+        program = compile_ffmpeg_segment(plan, source_w=1080, source_h=1920)
+        before = ffmpeg_program_sha256([program])
+        bind_sendcmd_file(program, "/tmp/a.txt")
+        bind_sendcmd_file(program, "/tmp/b.txt")
+        after = ffmpeg_program_sha256([program])
+        self.assertEqual(before, after)
+
+        changed = compile_ffmpeg_segment(
+            RenderSegmentPlan(
+                segment_id="ramp",
+                start_ms=0,
+                end_ms=1000,
+                primitive=RenderPrimitive.LINEAR_RAMP,
+                keyframes=(
+                    RenderKeyframe(0, CanonicalCrop(0, 0, 1080, 1920)),
+                    RenderKeyframe(1000, CanonicalCrop(50, 70, 990, 1760)),
+                ),
+            ),
+            source_w=1080,
+            source_h=1920,
+        )
+        self.assertNotEqual(before, ffmpeg_program_sha256([changed]))
 
     def test_backend_rejects_out_of_bounds_crop(self):
         plan = RenderSegmentPlan(
