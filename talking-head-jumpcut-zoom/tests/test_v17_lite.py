@@ -19,7 +19,7 @@ def observations(face_ratio=0.30):
             "hair_top": 0.12,
             "caption_overlap": 0.0,
         }
-        for t in range(0, 4000, 250)
+        for t in range(0, 5000, 250)
     ]
 
 
@@ -80,6 +80,32 @@ class LitePlannerTests(unittest.TestCase):
         decision = result["decisions"][0]
         self.assertEqual(decision["start_ms"], 1200)
 
+    def test_long_eye_closure_and_pose_unsafe_are_rejected(self):
+        result = plan(
+            payload(
+                candidates=[
+                    {"id": "closed", "ms": 900, "word_boundary": True, "long_eye_closure": True},
+                    {"id": "pose", "ms": 1000, "word_boundary": True, "pose_unsafe": True},
+                    {"id": "safe", "ms": 1200, "word_boundary": True},
+                ]
+            )
+        )
+        self.assertEqual(result["decisions"][0]["start_ms"], 1200)
+
+    def test_face_travel_degrades_close_state_before_it_can_clip(self):
+        data = payload(importance=1.0, face_ratio=0.28)
+        data["config"]["intensity"] = "dynamic"
+        data["observations"] = observations(0.28)
+        for row in data["observations"]:
+            if row["t_ms"] == 750:
+                row["face_cx"] = 0.28
+            elif row["t_ms"] == 1250:
+                row["face_cx"] = 0.72
+        result = plan(data)
+        decision = result["decisions"][0]
+        self.assertNotEqual(decision["state"], "EMPHASIS")
+        self.assertIn(decision["state"], {"CONTEXT", "ARGUMENT"})
+
     def test_4k_quality_cap_does_not_raise_artistic_zoom_cap(self):
         data = payload(importance=1.0, face_ratio=0.20)
         data["source"] = {"width": 2160, "height": 3840, "quality_cap": 1.60}
@@ -122,11 +148,11 @@ class LitePlannerTests(unittest.TestCase):
                 },
                 {
                     "id": "release",
-                    "t_ms": 2800,
-                    "end_ms": 3300,
+                    "t_ms": 3100,
+                    "end_ms": 3600,
                     "importance": 1.0,
                     "direction": "release",
-                    "boundary_candidates": [{"id": "b3", "ms": 2800, "word_boundary": True}],
+                    "boundary_candidates": [{"id": "b3", "ms": 3100, "word_boundary": True}],
                 },
             ],
         }
@@ -135,6 +161,44 @@ class LitePlannerTests(unittest.TestCase):
         self.assertEqual([d["direction"] for d in decisions], ["build", "peak", "release"])
         self.assertEqual([d["desired_state"] for d in decisions], ["ARGUMENT", "EMPHASIS", "CONTEXT"])
         self.assertEqual([d["state"] for d in decisions], ["ARGUMENT", "EMPHASIS", "CONTEXT"])
+
+    def test_min_dwell_blocks_nervous_release_but_strong_peak_can_arrive_sooner(self):
+        data = {
+            "source": {"width": 2160, "height": 3840, "quality_cap": 1.60},
+            "config": {"intensity": "moderate", "window_ms": 600},
+            "observations": observations(0.20),
+            "semantic_events": [
+                {
+                    "id": "build",
+                    "t_ms": 1000,
+                    "end_ms": 1300,
+                    "importance": 1.0,
+                    "direction": "build",
+                    "boundary_candidates": [{"id": "b1", "ms": 1000, "word_boundary": True}],
+                },
+                {
+                    "id": "peak",
+                    "t_ms": 1800,
+                    "end_ms": 2100,
+                    "importance": 1.0,
+                    "direction": "peak",
+                    "boundary_candidates": [{"id": "b2", "ms": 1800, "word_boundary": True}],
+                },
+                {
+                    "id": "release-too-soon",
+                    "t_ms": 2400,
+                    "end_ms": 2700,
+                    "importance": 1.0,
+                    "direction": "release",
+                    "boundary_candidates": [{"id": "b3", "ms": 2400, "word_boundary": True}],
+                },
+            ],
+        }
+        result = plan(data)
+        self.assertEqual(result["decisions"][0]["state"], "ARGUMENT")
+        self.assertEqual(result["decisions"][1]["state"], "EMPHASIS")
+        self.assertEqual(result["decisions"][2]["status"], "KEEP")
+        self.assertEqual(result["decisions"][2]["earliest_change_ms"], 3300)
 
     def test_qc_rejects_non_hold_noop(self):
         bad = {
