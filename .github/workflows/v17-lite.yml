@@ -5,9 +5,10 @@ on:
     branches: [v1.7-lite]
   pull_request:
     paths:
+      - 'talking-head-jumpcut-zoom/SKILL.md'
       - 'talking-head-jumpcut-zoom/V1_7_LITE.md'
       - 'talking-head-jumpcut-zoom/scripts/**'
-      - 'talking-head-jumpcut-zoom/tests/test_v17_lite.py'
+      - 'talking-head-jumpcut-zoom/tests/**'
       - '.github/workflows/v17-lite.yml'
 
 jobs:
@@ -20,7 +21,7 @@ jobs:
           python-version: '3.11'
       - name: Compile
         working-directory: talking-head-jumpcut-zoom
-        run: python -m compileall -q scripts tests/test_v17_lite.py
+        run: python -m compileall -q scripts tests
       - name: Core tests
         working-directory: talking-head-jumpcut-zoom
-        run: python -m unittest tests/test_v17_lite.py -v
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
