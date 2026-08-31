@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-DEFAULT_STATE_CAP = {"CONTEXT": 1.00, "ARGUMENT": 1.12, "EMPHASIS": 1.20}
+DEFAULT_STATE_CAP = {"CONTEXT": 1.00, "ARGUMENT": 1.12, "EMPHASIS": 1.20, "AMBIENT": 1.05}
 DEFAULT_ABSOLUTE_ZOOM_CAP = 1.20
 
 
@@ -20,11 +20,16 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
         state = str(state).upper()
         if state in state_caps:
             state_caps[state] = min(float(value), DEFAULT_ABSOLUTE_ZOOM_CAP)
+    ambient_cap = min(float(config.get("ambient_refresh_scale", DEFAULT_STATE_CAP["AMBIENT"])), DEFAULT_STATE_CAP["AMBIENT"])
+    state_caps["AMBIENT"] = ambient_cap
 
     errors: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
+    items: list[tuple[str, int, dict[str, Any]]] = []
+    items.extend(("decision", i, d) for i, d in enumerate(plan.get("decisions", [])))
+    items.extend(("refresh", i, d) for i, d in enumerate(plan.get("refreshes", [])))
 
-    for index, decision in enumerate(plan.get("decisions", [])):
+    for item_kind, index, decision in items:
         if decision.get("status") != "PLANNED":
             continue
 
@@ -35,16 +40,16 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
         for key in ("crop_start", "crop_end"):
             crop = [int(v) for v in decision[key]]
             if len(crop) != 4:
-                errors.append({"index": index, "check": "crop_shape", "field": key})
+                errors.append({"kind": item_kind, "index": index, "check": "crop_shape", "field": key})
                 continue
             x, y, w, h = crop
             if w <= 0 or h <= 0 or x < 0 or y < 0 or x + w > width or y + h > height:
-                errors.append({"index": index, "check": "crop_bounds", "field": key, "crop": crop})
+                errors.append({"kind": item_kind, "index": index, "check": "crop_bounds", "field": key, "crop": crop})
             if any(v % 2 for v in crop):
-                warnings.append({"index": index, "check": "crop_even", "field": key, "crop": crop})
+                warnings.append({"kind": item_kind, "index": index, "check": "crop_even", "field": key, "crop": crop})
             scale = min(width / max(w, 1), height / max(h, 1))
             if scale < 0.999:
-                errors.append({"index": index, "check": "scale_below_1", "field": key, "scale": scale})
+                errors.append({"kind": item_kind, "index": index, "check": "scale_below_1", "field": key, "scale": scale})
             if key == "crop_end":
                 end_scale = scale
 
@@ -52,6 +57,7 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
         if declared_scale is not None and float(declared_scale) > state_cap + 0.005:
             errors.append(
                 {
+                    "kind": item_kind,
                     "index": index,
                     "check": "zoom_too_aggressive",
                     "state": state,
@@ -62,6 +68,7 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
         if end_scale is not None and end_scale > state_cap + 0.01:
             errors.append(
                 {
+                    "kind": item_kind,
                     "index": index,
                     "check": "crop_scale_too_aggressive",
                     "state": state,
@@ -72,15 +79,19 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
 
         motion = str(decision.get("motion", "hold"))
         if motion != "hold" and decision.get("crop_start") == decision.get("crop_end"):
-            errors.append({"index": index, "check": "noop_zoom", "motion": motion})
+            errors.append({"kind": item_kind, "index": index, "check": "noop_zoom", "motion": motion})
         if int(decision.get("end_ms", 0)) < int(decision.get("start_ms", 0)):
-            errors.append({"index": index, "check": "negative_duration"})
+            errors.append({"kind": item_kind, "index": index, "check": "negative_duration"})
+
+        if item_kind == "refresh" and decision.get("semantic_trigger") is not False:
+            errors.append({"kind": item_kind, "index": index, "check": "ambient_must_be_nonsemantic"})
 
     return {
         "status": "PASS" if not errors else "FAIL",
         "errors": errors,
         "warnings": warnings,
         "planned_count": sum(1 for d in plan.get("decisions", []) if d.get("status") == "PLANNED"),
+        "refresh_count": sum(1 for d in plan.get("refreshes", []) if d.get("status") == "PLANNED"),
     }
 
 
