@@ -165,7 +165,7 @@ class LitePlannerTests(unittest.TestCase):
     def test_min_dwell_blocks_nervous_release_but_strong_peak_can_arrive_sooner(self):
         data = {
             "source": {"width": 2160, "height": 3840, "quality_cap": 1.60},
-            "config": {"intensity": "moderate", "window_ms": 600},
+            "config": {"intensity": "dynamic", "window_ms": 600},
             "observations": observations(0.20),
             "semantic_events": [
                 {
@@ -198,7 +198,7 @@ class LitePlannerTests(unittest.TestCase):
         self.assertEqual(result["decisions"][0]["state"], "ARGUMENT")
         self.assertEqual(result["decisions"][1]["state"], "EMPHASIS")
         self.assertEqual(result["decisions"][2]["status"], "KEEP")
-        self.assertEqual(result["decisions"][2]["earliest_change_ms"], 3300)
+        self.assertEqual(result["decisions"][2]["earliest_change_ms"], 3000)
 
     def test_qc_rejects_non_hold_noop(self):
         bad = {
