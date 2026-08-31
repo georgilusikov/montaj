@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from statistics import median
 from typing import Iterable
 
@@ -190,6 +191,7 @@ def build_temporal_feasibility_map(
         raise ValueError("window_ms must be positive")
 
     start = obs[0].t_ms
+    last_observed_ms = obs[-1].t_ms
     buckets: dict[int, list[FrameObservation]] = {}
     for item in obs:
         key = (item.t_ms - start) // window_ms
@@ -197,8 +199,13 @@ def build_temporal_feasibility_map(
 
     result: dict[ShotState, list[FeasibilityInterval]] = {}
     for band in bands:
-        result[band.state] = [
-            evaluate_window(buckets[key], band, caps)
-            for key in sorted(buckets)
-        ]
+        intervals: list[FeasibilityInterval] = []
+        for key in sorted(buckets):
+            interval = evaluate_window(buckets[key], band, caps)
+            bucket_start = start + key * window_ms
+            bucket_end = min(bucket_start + window_ms - 1, last_observed_ms)
+            intervals.append(
+                replace(interval, start_ms=bucket_start, end_ms=max(bucket_start, bucket_end))
+            )
+        result[band.state] = intervals
     return result
