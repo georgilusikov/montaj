@@ -50,10 +50,47 @@ Default desired face-ratio targets are provisional:
 - ARGUMENT: 0.35
 - EMPHASIS: 0.41
 
+The targets describe the desired composition. They do **not** authorize arbitrary zoom strength.
+
+### Artistic zoom caps
+
+Default state caps:
+
+- CONTEXT: **1.05x**
+- ARGUMENT: **1.12x**
+- EMPHASIS: **1.20x**
+
+Global absolute cap: **1.20x**.
+
+The intensity cap also applies:
+
+- calm: 1.10x
+- moderate: 1.16x
+- dynamic: 1.20x
+
+Therefore, for the normal `moderate` talking-head profile, even EMPHASIS is capped at **1.16x**.
+
+### 4K rule
+
+`quality_cap` is a **technical image-quality limit only**. It never raises the artistic cap.
+
+Example:
+
+```text
+4K source quality_cap = 1.60
+moderate EMPHASIS
+=> effective cap = min(1.60 quality, 1.16 style, 1.20 state, 1.20 absolute)
+=> 1.16x maximum
+```
+
+A plan that uses 1.33x ARGUMENT or 1.60x EMPHASIS is **not v1.7 Lite compliant**, even when the source is 4K. `simple_qc.py` must reject it.
+
 The planner computes scale from the actual face ratio and clamps it by:
 
-- style cap: calm 1.10 / moderate 1.16 / dynamic 1.20
-- quality cap: user/config value, default 1.16
+- state cap
+- style/intensity cap
+- absolute zoom cap
+- quality cap
 - geometry safety
 
 If three distinct states do not fit, use two. If two do not fit, use one. Never invent a fake third plan. `scale < 1.00` is forbidden.
@@ -135,13 +172,14 @@ Content-removing jumpcuts remain separate from framing decisions.
 
 ## QC Lite
 
-After render check only:
+After render/plan check only:
 
 1. all crops stay inside source bounds;
 2. no forbidden scale below 1.00;
-3. face/hair/captions remain safe in planned frames;
-4. planned zoom actually changes crop when motion != hold;
-5. ASR/text integrity can be checked by the existing skill flow.
+3. no crop/declared scale exceeds the state/artistic cap;
+4. face/hair/captions remain safe in planned frames;
+5. planned zoom actually changes crop when motion != hold;
+6. ASR/text integrity can be checked by the existing skill flow.
 
 No critic registry, provenance framework, pattern lifecycle, director provider, retention gate, or complex report schema in v1.7 Lite.
 
@@ -150,7 +188,8 @@ No critic registry, provenance framework, pattern lifecycle, director provider, 
 - `zoom_planner.py` produces a valid plan from observations + semantic events;
 - 1–3 feasible states work automatically;
 - WHY is independent from gaze;
+- 4K quality cannot silently create an aggressive zoom;
 - blink/blur/gesture safety is preserved;
 - renderer accepts canonical crop coordinates;
-- simple QC catches invalid crops and no-op zooms;
+- simple QC catches invalid crops, no-op zooms, and excessive zoom strength;
 - implementation stays small enough to understand and modify directly.
