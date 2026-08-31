@@ -50,3 +50,8 @@ jobs:
         env:
           PYTHONPATH: .
         run: python tests/ffmpeg_timeline_smoke.py
+      - name: FFmpeg video master CLI smoke
+        working-directory: talking-head-jumpcut-zoom
+        env:
+          PYTHONPATH: .
+        run: python tests/ffmpeg_master_cli_smoke.py
