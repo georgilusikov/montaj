@@ -11,6 +11,9 @@ class Severity(str, Enum):
     NO_GO = "no_go"
 
 
+VALID_STATUSES = {"pass", "warn", "fail", "skip"}
+
+
 @dataclass(frozen=True)
 class CheckSpec:
     check_id: str
@@ -43,8 +46,9 @@ CORE_CHECKS = (
 
 class CheckRegistry:
     def __init__(self, specs: Iterable[CheckSpec] = CORE_CHECKS) -> None:
+        specs = tuple(specs)
         self._specs = {spec.check_id: spec for spec in specs}
-        if len(self._specs) != len(tuple(specs)):
+        if len(self._specs) != len(specs):
             raise ValueError("duplicate check ids")
 
     def resolve(self, *, profile: str, features: set[str] | None = None) -> tuple[CheckSpec, ...]:
@@ -65,7 +69,13 @@ class CheckRegistry:
     ) -> dict[str, object]:
         expected = self.resolve(profile=profile, features=features)
         expected_by_id = {spec.check_id: spec for spec in expected}
+        results = tuple(results)
+        invalid = sorted({result.status for result in results if result.status not in VALID_STATUSES})
+        if invalid:
+            raise ValueError(f"invalid check statuses: {invalid}")
         reported = {result.check_id: result for result in results}
+        if len(reported) != len(results):
+            raise ValueError("duplicate reported check ids")
 
         missing = sorted(set(expected_by_id) - set(reported))
         unknown = sorted(set(reported) - set(expected_by_id))
