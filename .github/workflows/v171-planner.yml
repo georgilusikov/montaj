@@ -1,0 +1,27 @@
+name: v1.7.1 planner core
+
+on:
+  push:
+    branches: [v1.7.1-semantic-planner]
+  pull_request:
+    paths:
+      - 'talking-head-jumpcut-zoom/thz_planner/**'
+      - 'talking-head-jumpcut-zoom/thz_critic/**'
+      - 'talking-head-jumpcut-zoom/tests/**'
+      - 'talking-head-jumpcut-zoom/docs/V1_7_1_SPEC.md'
+      - '.github/workflows/v171-planner.yml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile
+        working-directory: talking-head-jumpcut-zoom
+        run: python -m compileall -q thz_planner thz_critic tests
+      - name: Unit tests
+        working-directory: talking-head-jumpcut-zoom
+        run: python -m unittest discover -s tests -v
