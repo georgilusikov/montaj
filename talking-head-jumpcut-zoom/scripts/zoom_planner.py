@@ -14,19 +14,32 @@ STYLE_CAP = {"calm": 1.10, "moderate": 1.16, "dynamic": 1.20}
 MIN_STEP = {"calm": 0.04, "moderate": 0.06, "dynamic": 0.06}
 MIN_DWELL_MS = {"calm": 2000, "moderate": 1500, "dynamic": 1200}
 
-# Rhythm is only a soft boundary preference. Meaning still decides whether a zoom exists.
+# Meaning chooses semantic changes; cadence only helps choose a good boundary.
 PREFERRED_CHANGE_MS = {"calm": 3000, "moderate": 2500, "dynamic": 2200}
 CADENCE_BONUS_MAX = 0.10
 CADENCE_TOLERANCE_MS = 900
 
-# Zooms are semantic episodes, not persistent states. The clause length chooses one
-# of these bands unless the semantic layer supplies `zoom_duration_type` explicitly.
+# BUILD is a gradual tension cue, not necessarily the full ARGUMENT punch.
+# Moderate therefore gives the useful visual vocabulary 1.00 -> ~1.05 -> ~1.12.
+SOFT_BUILD_SCALE = {"calm": 1.03, "moderate": 1.05, "dynamic": 1.06}
+SOFT_BUILD_PUSH_MS = {"calm": 2800, "moderate": 2400, "dynamic": 1900}
+
+# Zooms are semantic episodes, not persistent states.
 ZOOM_DURATION_BANDS_MS = {
     "micro_punch": (800, 1400, 1100),
     "beat": (1500, 2400, 2000),
     "argument_hold": (2500, 3500, 3000),
 }
 CONTINUATION_GRACE_MS = 500
+
+# Visual-rhythm watchdog. It does NOT create semantic emphasis. It only prevents a
+# neutral source frame from remaining completely unchanged for too long.
+VISUAL_REFRESH_MAX_MS = {"calm": 5500, "moderate": 5000, "dynamic": 4200}
+VISUAL_REFRESH_REST_MS = {"calm": 3000, "moderate": 2500, "dynamic": 2200}
+AMBIENT_REFRESH_SCALE = {"calm": 1.02, "moderate": 1.04, "dynamic": 1.05}
+AMBIENT_REFRESH_LEG_MS = {"calm": 2500, "moderate": 2200, "dynamic": 1800}
+AMBIENT_MIN_LEG_MS = 1000
+AMBIENT_GUARD_MS = 400
 
 STRONG_PEAK_MIN_DWELL_MS = 800
 STRONG_PEAK_IMPORTANCE = 0.92
@@ -43,6 +56,10 @@ def _even(value: float, minimum: int = 2) -> int:
 
 def _clamp(value: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, value))
+
+
+def _is_source_crop(crop: list[int] | tuple[int, int, int, int], width: int, height: int) -> bool:
+    return list(crop) == [0, 0, width, height]
 
 
 def _state_for_importance(value: float) -> str:
@@ -70,7 +87,8 @@ def _directed_state(base_desired: str, current_state: str, raw_direction: Any) -
     if direction == "PEAK":
         return base_desired, "peak"
 
-    # BUILD rises at most to ARGUMENT and never downshifts an already-close framing.
+    # BUILD never jumps straight to EMPHASIS. A first build may be rendered as a
+    # partial ARGUMENT crop (~1.05 in moderate) and then continue to a stronger peak.
     if STATE_LEVEL[current_state] >= STATE_LEVEL["ARGUMENT"]:
         return current_state, "build"
     if STATE_LEVEL[base_desired] >= STATE_LEVEL["ARGUMENT"]:
@@ -79,7 +97,6 @@ def _directed_state(base_desired: str, current_state: str, raw_direction: Any) -
 
 
 def _zoom_duration(event: dict[str, Any], start_ms: int) -> tuple[str, int]:
-    """Choose a semantic episode duration from the clause length or explicit type."""
     explicit = str(event.get("zoom_duration_type") or "").strip().lower()
     raw_ms = max(0, int(event.get("end_ms", start_ms)) - start_ms)
 
@@ -110,6 +127,8 @@ def _samples(observations: list[dict[str, Any]], center_ms: int, window_ms: int)
 
 
 def _crop_for_scale(rows: list[dict[str, Any]], width: int, height: int, scale: float) -> tuple[int, int, int, int]:
+    if scale <= 1.000001:
+        return 0, 0, width, height
     crop_w = _even(width / scale)
     crop_h = _even(height / scale)
     cx = median(float(o.get("face_cx", 0.5)) for o in rows)
@@ -234,6 +253,32 @@ def _choose_state(states: list[dict[str, Any]], desired: str) -> dict[str, Any] 
     return states[0] if states else None
 
 
+def _soft_build_state(
+    selected: dict[str, Any],
+    rows: list[dict[str, Any]],
+    *,
+    width: int,
+    height: int,
+    intensity: str,
+) -> dict[str, Any]:
+    """Use a partial ARGUMENT crop for gradual BUILD tension when geometry allows."""
+    if selected["state"] != "ARGUMENT":
+        return selected
+    scale = min(float(selected["scale"]), SOFT_BUILD_SCALE[intensity])
+    if scale <= 1.000001:
+        return selected
+    crop = _crop_for_scale(rows, width, height, scale)
+    safe, _ = _crop_safe(rows, crop, width, height, scale)
+    if not safe:
+        return selected
+    result = dict(selected)
+    result["scale"] = round(scale, 4)
+    result["crop"] = list(crop)
+    result["face_ratio"] = round(median(float(o.get("face_ratio", 0.0)) for o in rows) * scale, 4)
+    result["soft_build"] = True
+    return result
+
+
 def _choose_boundary(
     event_ms: int,
     candidates: list[dict[str, Any]],
@@ -321,6 +366,160 @@ def _return_event(pending: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _ambient_crop(
+    observations: list[dict[str, Any]],
+    center_ms: int,
+    window_ms: int,
+    *,
+    width: int,
+    height: int,
+    requested_scale: float,
+) -> tuple[float, list[int]] | None:
+    rows = _samples(observations, center_ms, window_ms)
+    scales: list[float] = []
+    for value in (requested_scale, min(requested_scale, 1.03), 1.02):
+        rounded = round(max(1.0, value), 4)
+        if rounded > 1.0001 and rounded not in scales:
+            scales.append(rounded)
+    for scale in scales:
+        crop = _crop_for_scale(rows, width, height, scale)
+        safe, _ = _crop_safe(rows, crop, width, height, scale)
+        if safe:
+            return scale, list(crop)
+    return None
+
+
+def _make_ambient_refreshes(
+    decisions: list[dict[str, Any]],
+    returns: list[dict[str, Any]],
+    observations: list[dict[str, Any]],
+    *,
+    width: int,
+    height: int,
+    timeline_end_ms: int,
+    intensity: str,
+    max_static_ms: int,
+) -> list[dict[str, Any]]:
+    """Fill long source-frame gaps with closed, non-semantic push/pull cycles.
+
+    Each cycle returns to the exact source crop before the next semantic transition,
+    so it never changes the semantic planner's assumed starting composition.
+    """
+    source_crop = [0, 0, width, height]
+    changes: list[dict[str, Any]] = []
+
+    for item in decisions:
+        if item.get("status") != "PLANNED" or item.get("crop_start") == item.get("crop_end"):
+            continue
+        start = int(item.get("start_ms", 0))
+        settle = int(item.get("transition_end_ms", start))
+        changes.append({"start_ms": start, "settle_ms": max(start, settle), "crop_end": list(item["crop_end"]), "priority": 2})
+
+    for item in returns:
+        if item.get("crop_start") == item.get("crop_end"):
+            continue
+        start = int(item.get("start_ms", 0))
+        changes.append({"start_ms": start, "settle_ms": start, "crop_end": list(item["crop_end"]), "priority": 0})
+
+    changes.sort(key=lambda item: (item["start_ms"], item["priority"]))
+
+    refreshes: list[dict[str, Any]] = []
+    current_crop = source_crop
+    source_since_ms: int | None = 0
+    refresh_index = 0
+
+    def fill_gap(gap_start: int, gap_end: int) -> None:
+        nonlocal refresh_index
+        cursor = max(0, gap_start)
+        gap_end = max(cursor, gap_end)
+        rest_ms = VISUAL_REFRESH_REST_MS[intensity]
+        desired_leg_ms = AMBIENT_REFRESH_LEG_MS[intensity]
+        requested_scale = AMBIENT_REFRESH_SCALE[intensity]
+
+        while gap_end - cursor > max_static_ms:
+            push_start = cursor + rest_ms
+            available = gap_end - push_start - AMBIENT_GUARD_MS
+            if available < 2 * AMBIENT_MIN_LEG_MS:
+                break
+            leg_ms = min(desired_leg_ms, available // 2)
+            if leg_ms < AMBIENT_MIN_LEG_MS:
+                break
+            push_end = push_start + leg_ms
+            pull_end = push_end + leg_ms
+            ambient = _ambient_crop(
+                observations,
+                center_ms=push_end,
+                window_ms=max(1000, 2 * leg_ms),
+                width=width,
+                height=height,
+                requested_scale=requested_scale,
+            )
+            if ambient is None:
+                cursor += max_static_ms
+                continue
+
+            scale, crop = ambient
+            refresh_index += 1
+            common = {
+                "status": "PLANNED",
+                "state": "AMBIENT",
+                "base_desired_state": "CONTEXT",
+                "desired_state": "CONTEXT",
+                "direction": "neutral",
+                "semantic_trigger": False,
+                "visual_refresh": True,
+                "state_cap": max(AMBIENT_REFRESH_SCALE.values()),
+                "why": "visual_refresh_watchdog",
+            }
+            refreshes.append(
+                {
+                    **common,
+                    "event_id": f"ambient-{refresh_index}-push",
+                    "event_ms": push_start,
+                    "start_ms": push_start,
+                    "end_ms": push_end,
+                    "transition_end_ms": push_end,
+                    "motion": "slow_push",
+                    "crop_start": source_crop,
+                    "crop_end": crop,
+                    "scale": scale,
+                    "ambient_phase": "push",
+                }
+            )
+            refreshes.append(
+                {
+                    **common,
+                    "event_id": f"ambient-{refresh_index}-pull",
+                    "event_ms": push_end,
+                    "start_ms": push_end,
+                    "end_ms": pull_end,
+                    "transition_end_ms": pull_end,
+                    "motion": "slow_push",
+                    "crop_start": crop,
+                    "crop_end": source_crop,
+                    "scale": 1.0,
+                    "ambient_phase": "pull",
+                }
+            )
+            cursor = pull_end
+
+    for change in changes:
+        if source_since_ms is not None and _is_source_crop(current_crop, width, height):
+            fill_gap(source_since_ms, int(change["start_ms"]))
+
+        current_crop = list(change["crop_end"])
+        if _is_source_crop(current_crop, width, height):
+            source_since_ms = int(change["settle_ms"])
+        else:
+            source_since_ms = None
+
+    if source_since_ms is not None and _is_source_crop(current_crop, width, height):
+        fill_gap(source_since_ms, timeline_end_ms)
+
+    refreshes.sort(key=lambda item: (int(item["start_ms"]), str(item["event_id"])))
+    return refreshes
+
+
 def plan(payload: dict[str, Any]) -> dict[str, Any]:
     source = dict(payload.get("source") or {})
     width = int(source["width"])
@@ -338,6 +537,8 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
     min_dwell_ms = max(0, int(config.get("min_dwell_ms", MIN_DWELL_MS[intensity])))
     preferred_change_ms = max(0, int(config.get("preferred_change_ms", PREFERRED_CHANGE_MS[intensity])))
     peak_min_dwell_ms = max(0, int(config.get("peak_min_dwell_ms", STRONG_PEAK_MIN_DWELL_MS)))
+    max_static_ms = max(2000, int(config.get("visual_refresh_max_ms", VISUAL_REFRESH_MAX_MS[intensity])))
+    visual_refresh_enabled = bool(config.get("visual_refresh_enabled", True))
 
     state_caps = dict(STATE_CAP)
     for state, value in dict(config.get("state_caps") or {}).items():
@@ -357,8 +558,6 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
 
     for index, event in enumerate(events):
         event_ms = int(event["t_ms"])
-        # If the previous zoom episode already ended, materialize its return before
-        # interpreting this semantic beat. This prevents ARGUMENT from sticking forever.
         if pending_return is not None and event_ms >= int(pending_return["at_ms"]):
             returns.append(_return_event(pending_return))
             current_state = "CONTEXT"
@@ -396,6 +595,9 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
                 }
             )
             continue
+
+        if direction == "build" and current_state == "CONTEXT":
+            selected = _soft_build_state(selected, rows, width=width, height=height, intensity=intensity)
 
         target_crop = list(selected["crop"])
         will_change = target_crop != current_crop
@@ -435,9 +637,12 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
             continue
 
         start_ms = int(boundary["ms"])
-        scale_delta = abs(selected["scale"] / max(width / current_crop[2], 1e-9) - 1.0)
+        scale_delta = abs(float(selected["scale"]) / max(width / current_crop[2], 1e-9) - 1.0)
+        soft_build = bool(selected.get("soft_build", False)) and direction == "build"
         if target_crop == current_crop:
             motion = "hold"
+        elif soft_build:
+            motion = "slow_push"
         elif scale_delta < MIN_STEP[intensity] and importance >= EMPHASIS_IMPORTANCE:
             motion = "slow_push"
         else:
@@ -458,10 +663,7 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
             if next_event is not None:
                 next_direction = str(next_event.get("direction") or "").strip().upper()
                 next_ms = int(next_event["t_ms"])
-                continued_by_next = (
-                    next_direction in {"BUILD", "PEAK"}
-                    and next_ms <= episode_end_ms + CONTINUATION_GRACE_MS
-                )
+                continued_by_next = next_direction in {"BUILD", "PEAK"} and next_ms <= episode_end_ms + CONTINUATION_GRACE_MS
 
             auto_return = not continued_by_next
             if auto_return:
@@ -475,11 +677,14 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
             else:
                 pending_return = None
         else:
-            # A real semantic release/context decision supersedes any pending return.
             pending_return = None
 
         if motion == "slow_push" and duration_ms:
-            transition_end_ms = start_ms + min(900, max(400, duration_ms // 2))
+            if soft_build:
+                transition_ms = min(duration_ms, SOFT_BUILD_PUSH_MS[intensity])
+            else:
+                transition_ms = min(900, max(400, duration_ms // 2))
+            transition_end_ms = start_ms + transition_ms
         else:
             transition_end_ms = start_ms
 
@@ -510,6 +715,7 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
                 "episode_end_ms": episode_end_ms,
                 "auto_return": auto_return,
                 "continued_by_next": continued_by_next,
+                "soft_build": soft_build,
             }
         )
 
@@ -520,6 +726,22 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
 
     if pending_return is not None:
         returns.append(_return_event(pending_return))
+
+    event_end_ms = max((int(e.get("end_ms", e.get("t_ms", 0))) for e in events), default=0)
+    observation_end_ms = max((int(o.get("t_ms", 0)) for o in observations), default=0)
+    timeline_end_ms = int(source.get("duration_ms") or max(event_end_ms, observation_end_ms))
+    refreshes = []
+    if visual_refresh_enabled and timeline_end_ms > 0:
+        refreshes = _make_ambient_refreshes(
+            decisions,
+            returns,
+            observations,
+            width=width,
+            height=height,
+            timeline_end_ms=timeline_end_ms,
+            intensity=intensity,
+            max_static_ms=max_static_ms,
+        )
 
     return {
         "version": "1.7-lite",
@@ -536,9 +758,15 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
             "emphasis_importance": EMPHASIS_IMPORTANCE,
             "strong_peak_importance": STRONG_PEAK_IMPORTANCE,
             "zoom_duration_bands_ms": ZOOM_DURATION_BANDS_MS,
+            "soft_build_scale": SOFT_BUILD_SCALE[intensity],
+            "soft_build_push_ms": SOFT_BUILD_PUSH_MS[intensity],
+            "visual_refresh_enabled": visual_refresh_enabled,
+            "visual_refresh_max_ms": max_static_ms,
+            "ambient_refresh_scale": AMBIENT_REFRESH_SCALE[intensity],
         },
         "decisions": decisions,
         "returns": returns,
+        "refreshes": refreshes,
     }
 
 
