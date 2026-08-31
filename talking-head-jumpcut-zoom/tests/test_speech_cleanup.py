@@ -20,7 +20,9 @@ class SpeechCleanupTests(unittest.TestCase):
         result = plan_cleanup(payload)
         self.assertEqual(len(result["kept_segments"]), 1)
         self.assertEqual(result["content_cuts_ms"], [])
-        self.assertEqual(result["removed_duration_ms"], 3000 - 1450)
+        segment = result["kept_segments"][0]
+        self.assertEqual(segment["src_start_ms"], 80)
+        self.assertEqual(segment["src_end_ms"], 1450)
 
     def test_long_pause_is_reduced_to_target_gap(self):
         payload = {
@@ -52,6 +54,21 @@ class SpeechCleanupTests(unittest.TestCase):
         self.assertEqual(first["out_start_ms"], 0)
         self.assertEqual(second["out_start_ms"], first["out_end_ms"])
         self.assertEqual(result["content_cuts_ms"], [second["out_start_ms"]])
+
+    def test_words_are_remapped_to_dense_output_timeline(self):
+        payload = {
+            "source": {"duration_ms": 3000},
+            "words": [
+                {"text": "one", "start_ms": 200, "end_ms": 500},
+                {"text": "two", "start_ms": 1500, "end_ms": 1800},
+            ],
+        }
+        result = plan_cleanup(payload)
+        first, second = result["output_words"]
+        self.assertEqual(first["source_start_ms"], 200)
+        self.assertEqual(second["source_start_ms"], 1500)
+        self.assertLess(second["start_ms"], second["source_start_ms"])
+        self.assertEqual(second["start_ms"] - first["end_ms"], 180)
 
     def test_head_and_tail_padding_are_kept(self):
         payload = {
