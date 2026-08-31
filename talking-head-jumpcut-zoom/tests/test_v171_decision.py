@@ -2,7 +2,7 @@ import unittest
 
 from thz_planner.decision import plan_transition_intent
 from thz_planner.motion import plan_motion
-from thz_planner.patterns import pattern_candidates
+from thz_planner.patterns import pattern_candidates, select_pattern, shape_state_with_pattern
 from thz_planner.planner import plan_geometry_core
 from thz_planner.schema import FrameObservation, QualityMetrics, RenderPrimitive, ShotState
 from thz_planner.when_solver import BoundaryCandidate, solve_ai_when, solve_live_when
@@ -37,6 +37,15 @@ class WhyTests(unittest.TestCase):
 
 
 class PatternTests(unittest.TestCase):
+    def _ladder(self):
+        candidates = pattern_candidates(
+            theme_tag="warning",
+            available_states={ShotState.CONTEXT, ShotState.ARGUMENT, ShotState.EMPHASIS},
+            semantic_fit=0.9,
+            prosody_fit=0.7,
+        )
+        return next(x for x in candidates if x["pattern_id"] == "ladder")
+
     def test_patterns_degrade_to_available_states(self):
         candidates = pattern_candidates(
             theme_tag="warning",
@@ -47,6 +56,34 @@ class PatternTests(unittest.TestCase):
         ladder = next(x for x in candidates if x["pattern_id"] == "ladder")
         self.assertTrue(ladder["degraded"])
         self.assertEqual(ladder["usable_states"], (ShotState.CONTEXT, ShotState.EMPHASIS))
+
+    def test_unknown_theme_does_not_activate_pattern(self):
+        selected = select_pattern(
+            theme_tag=None,
+            available_states={ShotState.CONTEXT, ShotState.EMPHASIS},
+            semantic_fit=1.0,
+            prosody_fit=1.0,
+        )
+        self.assertIsNone(selected)
+
+    def test_pattern_cannot_raise_argument_why_to_emphasis(self):
+        target, shaped = shape_state_with_pattern(
+            self._ladder(),
+            semantic_desired_state=ShotState.ARGUMENT,
+            current_state=ShotState.ARGUMENT,
+        )
+        self.assertEqual(target, ShotState.ARGUMENT)
+        self.assertFalse(shaped)
+
+    def test_required_reset_fires_after_pattern_max_duration(self):
+        target, shaped = shape_state_with_pattern(
+            self._ladder(),
+            semantic_desired_state=ShotState.EMPHASIS,
+            current_state=ShotState.EMPHASIS,
+            pattern_elapsed_ms=12001,
+        )
+        self.assertEqual(target, ShotState.CONTEXT)
+        self.assertTrue(shaped)
 
 
 class WhenTests(unittest.TestCase):
@@ -114,6 +151,31 @@ class DecisionIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(result["status"], "PLANNED")
         self.assertEqual(result["when"]["id"], "safe_window")
+
+    def test_context_why_never_starts_pattern(self):
+        geometry = plan_geometry_core(
+            observations=rows(),
+            quality=QualityMetrics(1080, 1920),
+            intensity="moderate",
+            pace="neutral",
+            window_ms=500,
+        )
+        result = plan_transition_intent(
+            geometry_result=geometry,
+            semantic_at_ms=250,
+            current_state=ShotState.CONTEXT,
+            current_scale=1.0,
+            semantic_weight=0.0,
+            salience=0.0,
+            prosody=0.0,
+            theme_tag="warning",
+            boundary_candidates=[BoundaryCandidate("safe", 300, word_boundary=True)],
+            profile="live",
+            pace="neutral",
+        )
+        self.assertEqual(result["desired_state"], ShotState.CONTEXT)
+        self.assertIsNone(result["pattern_id"])
+        self.assertEqual(result["pattern_target_state"], ShotState.CONTEXT)
 
 
 if __name__ == "__main__":
