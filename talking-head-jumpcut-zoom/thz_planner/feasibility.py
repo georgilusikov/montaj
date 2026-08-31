@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from statistics import median
 from typing import Iterable
 
@@ -35,7 +34,7 @@ def _crop_for_observation(obs: FrameObservation, scale: float) -> tuple[float, f
     """Return normalized source crop x0,y0,x1,y1.
 
     X tracks face center but is clamped to source bounds. Y first protects 5% output
-    headroom, then is clamped. This is a geometry policy, not a renderer pixel crop.
+    headroom, then is clamped. This is planner geometry, not a renderer pixel crop.
     """
     crop_w = 1.0 / scale
     crop_h = 1.0 / scale
@@ -49,9 +48,14 @@ def _crop_for_observation(obs: FrameObservation, scale: float) -> tuple[float, f
     return x0, y0, x0 + crop_w, y0 + crop_h
 
 
-def _measure(obs: FrameObservation, scale: float) -> tuple[float, float, float, float, float, tuple[str, ...]]:
+def crop_for_observation(obs: FrameObservation, scale: float) -> tuple[float, float, float, float]:
+    """Public deterministic normalized crop helper used by the planner only."""
+    return _crop_for_observation(obs, scale)
+
+
+def _measure(obs: FrameObservation, scale: float) -> tuple[float, float, float, float, float, float, float, tuple[str, ...]]:
     x0, y0, x1, y1 = _crop_for_observation(obs, scale)
-    # Provisional face width approximation until a tracked face-width signal is added.
+    # Provisional face-width approximation until analysis emits a tracked face width.
     face_w = obs.face_ratio * 0.75
     face_left = obs.face_cx - face_w / 2.0
     face_right = obs.face_cx + face_w / 2.0
@@ -60,6 +64,8 @@ def _measure(obs: FrameObservation, scale: float) -> tuple[float, float, float, 
     bottom = (y1 - obs.bottom_keep_y) * scale
     left = (face_left - x0) * scale
     right = (x1 - face_right) * scale
+    face_center_x_out = (obs.face_cx - x0) * scale
+    face_center_y_out = (obs.face_cy - y0) * scale
 
     caption_loss = 0.0
     reasons: list[str] = []
@@ -81,12 +87,21 @@ def _measure(obs: FrameObservation, scale: float) -> tuple[float, float, float, 
     if right < SIDE_MARGIN_MIN:
         reasons.append("right_margin")
 
-    return top, bottom, left, right, caption_loss, tuple(sorted(set(reasons)))
+    return (
+        top,
+        bottom,
+        left,
+        right,
+        caption_loss,
+        face_center_x_out,
+        face_center_y_out,
+        tuple(sorted(set(reasons))),
+    )
 
 
 def _window_safe(observations: list[FrameObservation], scale: float) -> tuple[bool, CompositionMetrics, tuple[str, ...]]:
     rows = [_measure(obs, scale) for obs in observations]
-    reasons = tuple(sorted({r for row in rows for r in row[5]}))
+    reasons = tuple(sorted({r for row in rows for r in row[7]}))
     face = [obs.face_ratio * scale for obs in observations]
     metrics = CompositionMetrics(
         top_margin_min=min(r[0] for r in rows),
@@ -97,6 +112,8 @@ def _window_safe(observations: list[FrameObservation], scale: float) -> tuple[bo
         face_ratio_p05=_quantile(face, 0.05),
         face_ratio_p50=_quantile(face, 0.50),
         face_ratio_p95=_quantile(face, 0.95),
+        face_center_x_p50=_quantile([r[5] for r in rows], 0.50),
+        face_center_y_p50=_quantile([r[6] for r in rows], 0.50),
         max_safe_scale=scale,
         limiting_reasons=reasons,
     )
@@ -114,17 +131,15 @@ def _max_safe_scale(observations: list[FrameObservation], upper: float) -> tuple
         return upper, metrics_upper, reasons_upper
 
     lo, hi = 1.0, upper
-    best_metrics = metrics_one
     for _ in range(24):
         mid = (lo + hi) / 2.0
-        safe, metrics, _ = _window_safe(observations, mid)
+        safe, _, _ = _window_safe(observations, mid)
         if safe:
             lo = mid
-            best_metrics = metrics
         else:
             hi = mid
     final_scale = round(lo, 6)
-    safe, metrics, reasons = _window_safe(observations, final_scale)
+    _, metrics, reasons = _window_safe(observations, final_scale)
     return final_scale, metrics, reasons
 
 
@@ -138,12 +153,12 @@ def evaluate_window(
     base_p50 = median(obs.face_ratio for obs in observations)
     desired_scale = max(1.0, band.face_target / max(base_p50, 1e-9))
     policy_upper = min(desired_scale, caps.quality_cap, caps.style_cap)
-    geometry_cap, _, geometry_reasons = _max_safe_scale(observations, policy_upper)
+    geometry_cap, _, _ = _max_safe_scale(observations, policy_upper)
     actual_scale = min(policy_upper, geometry_cap)
     safe, metrics, reasons = _window_safe(observations, actual_scale)
 
-    # Desired bands are targets, not universal hard lower bounds. P95 above the
-    # desired hard maximum remains a safety reason; being below target is allowed.
+    # Bands are desired targets, not universal hard lower bounds. Excessive p95
+    # remains a hard safety failure; being below the desired target is allowed.
     hard_reasons = list(reasons)
     if metrics.face_ratio_p95 > band.face_max:
         hard_reasons.append("face_ratio_p95")
