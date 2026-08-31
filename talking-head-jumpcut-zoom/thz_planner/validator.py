@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
+from .coverage import output_coverage_gaps
 from .framing import derived_scale
 from .schema import FramingDecision, QualityMetrics, RenderPrimitive
 from .timeline import ContentEdit, validate_content_edits
@@ -39,6 +40,7 @@ def validate_manifest_pre_render(
     manifest: dict[str, Any],
     *,
     quality: QualityMetrics,
+    require_full_coverage: bool = True,
 ) -> dict[str, object]:
     content: tuple[ContentEdit, ...] = validate_content_edits(manifest.get("content_edits", ()))
     framing: Iterable[FramingDecision] = manifest.get("framing_decisions", ())
@@ -48,8 +50,19 @@ def validate_manifest_pre_render(
         if decision.time_basis != "output":
             raise ValueError("renderer manifest framing must use output time basis")
         count += 1
+
+    gaps = output_coverage_gaps(manifest)
+    if require_full_coverage and gaps:
+        compact = ",".join(
+            f"{gap.content_segment_id}:{gap.start_ms}-{gap.end_ms}"
+            for gap in gaps[:5]
+        )
+        raise ValueError(f"renderer framing coverage gaps: {compact}")
+
     return {
         "status": "PASS",
         "content_edit_count": len(content),
         "framing_decision_count": count,
+        "coverage_gap_count": len(gaps),
+        "framing_coverage": 1.0 if not gaps else 0.0,
     }
