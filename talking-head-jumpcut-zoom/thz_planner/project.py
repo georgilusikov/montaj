@@ -94,11 +94,17 @@ def plan_project(payload: dict[str, Any]) -> dict[str, Any]:
     if current_scale < 1.0:
         raise ValueError("initial_scale <1.00 is forbidden")
 
+    active_pattern_id: str | None = None
+    active_pattern_started_ms: int | None = None
     framing = []
     decisions: list[dict[str, object]] = []
     for index, event in enumerate(events):
         context = dict(event.get("context") or {})
         is_hook = bool(context.get("is_hook", False))
+        if bool(context.get("act_reset", False)):
+            active_pattern_id = None
+            active_pattern_started_ms = None
+
         event_geometry = hook_geometry if is_hook else geometry
         if event_geometry is None:
             raise AssertionError("hook geometry missing")
@@ -114,11 +120,18 @@ def plan_project(payload: dict[str, Any]) -> dict[str, Any]:
             segment_start_ms=int(event.get("segment_start_ms", 0)),
             history_penalty=dict(event.get("history_penalty") or {}),
             pace=pace,
+            active_pattern_id=active_pattern_id,
+            active_pattern_started_ms=active_pattern_started_ms,
         )
         decisions.append({
             "event_id": str(event.get("event_id", f"event_{index:04d}")),
             "status": transition.get("status"),
             "desired_state": transition.get("desired_state"),
+            "pattern_id": transition.get("pattern_id"),
+            "pattern_target_state": transition.get("pattern_target_state"),
+            "pattern_shaped": transition.get("pattern_shaped"),
+            "pattern_elapsed_ms": transition.get("pattern_elapsed_ms"),
+            "pattern_expired": transition.get("pattern_expired"),
             "degraded": transition.get("degraded"),
             "is_hook": is_hook,
         })
@@ -148,6 +161,15 @@ def plan_project(payload: dict[str, Any]) -> dict[str, Any]:
         current_state = decision.state
         current_scale = float(decision.derived.get("motion_end_scale", current_scale))
 
+        pattern_id = transition.get("pattern_id")
+        if bool(transition.get("pattern_expired", False)) or pattern_id is None:
+            active_pattern_id = None
+            active_pattern_started_ms = None
+        else:
+            active_pattern_id = str(pattern_id)
+            started = transition.get("pattern_started_ms")
+            active_pattern_started_ms = int(started) if started is not None else int(event["t_ms"])
+
     content_edits = _content_edits(list(payload.get("content_edits") or []))
     framing = list(
         synthesize_source_base_coverage(
@@ -161,6 +183,7 @@ def plan_project(payload: dict[str, Any]) -> dict[str, Any]:
         "planner_input_hash": sha256_canonical(payload),
         "geometry_output_hash": geometry["output_hash"],
         "framing_coverage_policy": "explicit_source_base_v1",
+        "pattern_lifecycle_policy": "semantic_ceiling_v1",
     }
     if hook_geometry is not None:
         provenance["hook_geometry_output_hash"] = hook_geometry["output_hash"]
