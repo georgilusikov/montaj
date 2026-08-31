@@ -15,6 +15,7 @@ ABSOLUTE_ZOOM_CAP = 1.20
 STYLE_CAP = {"calm": 1.10, "moderate": 1.16, "dynamic": 1.20}
 MIN_STEP = {"calm": 0.04, "moderate": 0.06, "dynamic": 0.06}
 STATE_LEVEL = {"CONTEXT": 0, "ARGUMENT": 1, "EMPHASIS": 2}
+SEMANTIC_DIRECTIONS = {"BUILD", "PEAK", "RELEASE", "NEUTRAL"}
 
 
 def _even(value: float, minimum: int = 2) -> int:
@@ -33,6 +34,37 @@ def _state_for_importance(value: float) -> str:
     if value >= 0.40:
         return "ARGUMENT"
     return "CONTEXT"
+
+
+def _directed_state(base_desired: str, current_state: str, raw_direction: Any) -> tuple[str, str]:
+    """Apply a tiny dramaturgy layer without introducing a pattern engine.
+
+    importance/type answers how much emphasis the sentence deserves. Direction only
+    controls the energy trajectory: BUILD rises at most to ARGUMENT, PEAK may use the
+    normal semantic target, RELEASE returns home, and NEUTRAL explicitly holds the
+    current state. If direction is absent/unknown, legacy importance behavior remains.
+    """
+    if raw_direction is None or not str(raw_direction).strip():
+        return base_desired, "auto"
+
+    direction = str(raw_direction).strip().upper()
+    if direction not in SEMANTIC_DIRECTIONS:
+        return base_desired, "auto"
+
+    if direction == "NEUTRAL":
+        return current_state, "neutral"
+    if direction == "RELEASE":
+        return "CONTEXT", "release"
+    if direction == "PEAK":
+        return base_desired, "peak"
+
+    # BUILD never jumps directly to EMPHASIS and never downshifts an already-close
+    # framing. It advances only when semantic importance supports ARGUMENT or higher.
+    if STATE_LEVEL[current_state] >= STATE_LEVEL["ARGUMENT"]:
+        return current_state, "build"
+    if STATE_LEVEL[base_desired] >= STATE_LEVEL["ARGUMENT"]:
+        return "ARGUMENT", "build"
+    return current_state, "build"
 
 
 def _samples(observations: list[dict[str, Any]], center_ms: int, window_ms: int) -> list[dict[str, Any]]:
@@ -212,9 +244,11 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
 
     for event in events:
         event_ms = int(event["t_ms"])
-        desired = str(event.get("type") or _state_for_importance(float(event.get("importance", 0.0)))).upper()
-        if desired not in STATE_LEVEL:
-            desired = _state_for_importance(float(event.get("importance", 0.0)))
+        importance = float(event.get("importance", 0.0))
+        base_desired = str(event.get("type") or _state_for_importance(importance)).upper()
+        if base_desired not in STATE_LEVEL:
+            base_desired = _state_for_importance(importance)
+        desired, direction = _directed_state(base_desired, current_state, event.get("direction"))
 
         rows = _samples(observations, event_ms, window_ms)
         states = _candidate_states(
@@ -228,7 +262,16 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
         )
         selected = _choose_state(states, desired)
         if selected is None:
-            decisions.append({"event_ms": event_ms, "status": "KEEP", "reason": "no_safe_state"})
+            decisions.append(
+                {
+                    "event_ms": event_ms,
+                    "status": "KEEP",
+                    "reason": "no_safe_state",
+                    "direction": direction,
+                    "base_desired_state": base_desired,
+                    "desired_state": desired,
+                }
+            )
             continue
 
         boundary = _choose_boundary(
@@ -241,14 +284,23 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
             window_ms=window_ms,
         )
         if boundary is None:
-            decisions.append({"event_ms": event_ms, "status": "KEEP", "reason": "no_safe_boundary"})
+            decisions.append(
+                {
+                    "event_ms": event_ms,
+                    "status": "KEEP",
+                    "reason": "no_safe_boundary",
+                    "direction": direction,
+                    "base_desired_state": base_desired,
+                    "desired_state": desired,
+                }
+            )
             continue
 
         target_crop = list(selected["crop"])
         scale_delta = abs(selected["scale"] / max(width / current_crop[2], 1e-9) - 1.0)
         if target_crop == current_crop:
             motion = "hold"
-        elif scale_delta < MIN_STEP[intensity] and float(event.get("importance", 0.0)) >= 0.75:
+        elif scale_delta < MIN_STEP[intensity] and importance >= 0.75:
             motion = "slow_push"
         else:
             motion = "step"
@@ -262,14 +314,16 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
                 "end_ms": end_ms,
                 "status": "PLANNED",
                 "state": selected["state"],
+                "base_desired_state": base_desired,
                 "desired_state": desired,
+                "direction": direction,
                 "motion": motion,
                 "crop_start": list(current_crop),
                 "crop_end": target_crop,
                 "scale": selected["scale"],
                 "state_cap": selected["effective_cap"],
                 "available_states": [s["state"] for s in states],
-                "why": "semantic_importance",
+                "why": "semantic_importance" if direction == "auto" else f"semantic_{direction}",
                 "boundary_score": boundary["score"],
             }
         )
