@@ -36,7 +36,7 @@ Gaze/head pose may improve WHEN, but must not create WHY.
 - caption overlap / gesture or prop hard block;
 - blink / blur / long eye closure / unsafe pose flags;
 - pause / word-boundary / head-return boundary candidates;
-- source dimensions and optional quality hints.
+- source dimensions, optional `duration_ms`, and optional quality hints.
 
 ## Shot states
 
@@ -125,19 +125,22 @@ These are semantic hints for the LLM/analysis layer, **not Python keyword trigge
 
 Optional values:
 
-- `build` — increase visual tension, at most toward ARGUMENT;
+- `build` — increase visual tension gradually;
 - `peak` — allow the semantic target; a strong event may reach EMPHASIS;
 - `release` — return toward CONTEXT and restore visual breathing room;
 - `neutral` — preserve current framing unless geometry forces degradation.
 
+For normal `moderate`, a first BUILD from CONTEXT uses a **soft partial ARGUMENT** around **1.05x** and normally reaches it with a slow push over up to **2.4 s**. It remains semantically ARGUMENT, but does not immediately consume the full 1.12x punch.
+
 ```text
-build   -> visually closer / more focused
-peak    -> strongest justified framing
-release -> wider / calmer framing
-neutral -> hold
+CONTEXT 1.00
+  -> BUILD ~1.05 slowly
+  -> ARGUMENT ~1.12 when the thesis needs a punch
+  -> EMPHASIS ~1.16–1.20 only for a rare peak
+  -> RELEASE 1.00
 ```
 
-This is not a mandatory repeating pattern. The goal is controlled visual tension and relief.
+This is not a mandatory ladder. A direct antithesis/punch may still jump straight from 1.00 to ARGUMENT, and a neutral section may remain at 1.00.
 
 ## WHEN: safety first, rhythm second
 
@@ -175,7 +178,7 @@ The camera-layer reference suggests a normal framing refresh roughly every **2.4
 - moderate target: ~2.5 s
 - dynamic target: ~2.2 s
 
-Meaning wins over the timer. The planner must never manufacture a zoom just because the cadence target expired.
+Meaning wins over the timer. The planner must never manufacture ARGUMENT/EMPHASIS just because the cadence target expired.
 
 ### Captions are separate
 
@@ -189,7 +192,7 @@ camera/framing rhythm != caption rhythm
 
 ARGUMENT and EMPHASIS are normally **temporary semantic episodes**, not persistent states that remain until the next semantic event.
 
-Default duration bands, calibrated from the reference montage analysis:
+Default duration bands:
 
 - `micro_punch`: **0.8–1.4 s** — one word / short prohibition / tiny antithesis;
 - `beat`: **1.5–2.4 s** — one compact semantic clause;
@@ -226,19 +229,42 @@ ARGUMENT -> CONTEXT -> EMPHASIS
 
 with an ugly split-second flash of the base framing.
 
-The semantic layer may also set `zoom_duration_type` explicitly when it knows that a phrase is a micro-punch, normal beat, or extended argument.
+## Visual rhythm watchdog
+
+Subtitles are external, so the camera layer must also avoid excessive visual stasis.
+
+The watchdog is deliberately **not another semantic planner**. If the frame is back at exact CONTEXT and no semantic framing change is coming for too long, it may add a tiny closed ambient cycle:
+
+```text
+1.00
+  -> slow ambient push ~1.04
+  -> slow ambient pull 1.00
+```
+
+Defaults:
+
+- moderate maximum intended static gap: about **5.0 s**;
+- ambient scale: normally **1.04x**, hard-bounded by the ambient cap **1.05x**;
+- each push/pull leg: around **2.2 s** when the gap has room;
+- geometry/safety still wins; if even the tiny crop is unsafe, the watchdog skips it rather than clipping the subject.
+
+The watchdog emits top-level `refreshes` with `semantic_trigger=false`. These do not count as ARGUMENT/EMPHASIS and do not alter WHY.
+
+This gives three different sources of visual change:
+
+1. **soft BUILD** — semantic, slow ~1.00 -> 1.05;
+2. **ARGUMENT/EMPHASIS step** — semantic, fast punch;
+3. **ambient refresh** — non-semantic, slow ~1.00 <-> 1.04 only when neutral footage would otherwise stay static too long.
 
 ## Motion
 
-Only three outputs:
+Outputs remain small:
 
 - `hold`
 - `step`
 - `slow_push`
 
-**Default visual language remains `step/reframe`.** The reference montage analysis supports hard/reframe cuts as the normal accent language, so v1.7 Lite must not convert all semantic zooms into smooth pushes.
-
-`slow_push` stays a rare option for a strong semantic emphasis when the crop delta is too small for a clean discrete step. It is not the default transition style.
+`step/reframe` remains the normal language for direct semantic punches. A `build` is allowed to use a 2–3 s slow push because gradual motion itself expresses rising tension. `slow_push` is also used by the non-semantic ambient watchdog, but only at a much smaller scale.
 
 No pattern engine. Ladder/Wave/Punch may later describe the resulting timeline, but do not generate it.
 
@@ -250,24 +276,13 @@ The zoom planner does not decide which spoken pauses to remove. Existing speech-
 
 ## Renderer contract
 
-`zoom_plan.json` contains semantic decisions plus explicit automatic returns. Example decision:
+`zoom_plan.json` contains:
 
-```json
-{
-  "start_ms": 1200,
-  "end_ms": 3200,
-  "state": "ARGUMENT",
-  "direction": "build",
-  "motion": "step",
-  "zoom_duration_type": "beat",
-  "zoom_duration_ms": 2000,
-  "auto_return": true,
-  "crop_start": [0, 0, 1080, 1920],
-  "crop_end": [48, 74, 982, 1746]
-}
-```
+- semantic `decisions`;
+- explicit automatic `returns`;
+- optional non-semantic `refreshes`.
 
-The top-level `returns` array contains the exact CONTEXT return commands. Renderer executes both semantic decisions and returns; it must not invent timing or composition.
+Renderer executes all three in one ordered command stream and never invents composition. At the same timestamp, an auto-return is applied first and a new semantic command last, so a stale return cannot erase a new punch.
 
 ## QC Lite
 
@@ -277,9 +292,10 @@ Check only:
 2. no scale below 1.00;
 3. CONTEXT must remain at 1.00x by default;
 4. no accent crop above artistic/state cap;
-5. face/hair/captions remain safe;
-6. non-hold motion actually changes crop;
-7. ASR/text integrity through the existing skill flow.
+5. AMBIENT must remain <= 1.05x and `semantic_trigger=false`;
+6. face/hair/captions remain safe;
+7. non-hold motion actually changes crop;
+8. ASR/text integrity through the existing skill flow.
 
 No critic registry, provenance framework, pattern lifecycle, director provider, retention gate, or complex report schema.
 
@@ -287,17 +303,19 @@ No critic registry, provenance framework, pattern lifecycle, director provider, 
 
 - WHY is independent from gaze;
 - importance controls emphasis level;
-- direction creates build / peak / release / neutral visual energy;
 - CONTEXT is exact source framing (1.00x);
+- BUILD can use a gradual ~1.05x intermediate cue;
+- ARGUMENT remains the normal ~1.12x punch;
 - EMPHASIS stays rare by default;
-- camera cadence is a soft prior, not a zoom generator;
+- camera cadence is a soft prior, not an emphasis generator;
+- neutral footage has a bounded static-watchdog fallback;
+- caption cadence remains separate;
 - zoom duration follows the semantic clause rather than a fixed metronome;
 - a finished zoom episode normally returns to CONTEXT;
 - adjacent build/peak beats can sustain tension without a base-frame flash;
 - geometry automatically collapses infeasible accent states;
 - 4K cannot silently create aggressive framing;
 - blink/blur/pose/gesture safety is preserved;
-- renderer receives canonical crop coordinates and explicit return timing;
-- step/reframe remains the default; slow_push remains rare;
-- simple QC catches invalid/no-op/excessive zoom;
+- renderer receives canonical crop coordinates and explicit timing;
+- simple QC catches invalid/no-op/excessive/semantic-ambient mistakes;
 - implementation remains small enough to understand directly.
