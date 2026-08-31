@@ -30,6 +30,15 @@ class HomeReturnViolation:
 
 
 @dataclass(frozen=True)
+class PatternResetViolation:
+    segment_id: str
+    pattern_id: str
+    reason: str
+    elapsed_ms: int
+    state: ShotState
+
+
+@dataclass(frozen=True)
 class StateBalanceReport:
     pace: str
     total_ms: int
@@ -105,6 +114,61 @@ def home_return_report(
         else:
             run_end = max(int(run_end), decision.end_ms)
     flush()
+    return tuple(violations)
+
+
+def _state_token(value) -> str:
+    if isinstance(value, ShotState):
+        return value.value
+    return str(value)
+
+
+def pattern_reset_report(
+    framing_decisions: Iterable[FramingDecision],
+) -> tuple[PatternResetViolation, ...]:
+    """Validate pattern max-duration/reset metadata independently from selection.
+
+    HOME_RETURN remains the global safety net. This check verifies the stronger
+    pattern-local contract: once a pattern exceeds max_duration, the decision must
+    explicitly mark expiry; and a pattern that requires reset must expire into one
+    of its declared terminal states.
+    """
+    violations: list[PatternResetViolation] = []
+    for decision in framing_decisions:
+        pattern_id = decision.desired.get("pattern_id")
+        if not pattern_id:
+            continue
+        elapsed = int(decision.desired.get("pattern_elapsed_ms", 0))
+        max_duration = decision.desired.get("pattern_max_duration_ms")
+        expired = bool(decision.desired.get("pattern_expired", False))
+        required_reset = bool(decision.desired.get("pattern_required_reset", False))
+        allowed = {
+            _state_token(item)
+            for item in tuple(decision.desired.get("pattern_allowed_terminal_states") or ())
+        }
+
+        if max_duration is not None and elapsed > int(max_duration) and not expired:
+            violations.append(
+                PatternResetViolation(
+                    segment_id=decision.segment_id,
+                    pattern_id=str(pattern_id),
+                    reason="pattern_max_duration_unhandled",
+                    elapsed_ms=elapsed,
+                    state=decision.state,
+                )
+            )
+            continue
+
+        if expired and required_reset and _state_token(decision.state) not in allowed:
+            violations.append(
+                PatternResetViolation(
+                    segment_id=decision.segment_id,
+                    pattern_id=str(pattern_id),
+                    reason="pattern_reset_terminal_not_allowed",
+                    elapsed_ms=elapsed,
+                    state=decision.state,
+                )
+            )
     return tuple(violations)
 
 
