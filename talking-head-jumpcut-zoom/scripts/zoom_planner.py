@@ -3,12 +3,15 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 from pathlib import Path
 from statistics import median
 from typing import Any
 
 STATE_TARGET = {"CONTEXT": 0.30, "ARGUMENT": 0.35, "EMPHASIS": 0.41}
+# Artistic caps are intentionally independent from source resolution. 4K may make a
+# crop cleaner, but it must not silently turn EMPHASIS into a 1.60x close-up.
+STATE_CAP = {"CONTEXT": 1.05, "ARGUMENT": 1.12, "EMPHASIS": 1.20}
+ABSOLUTE_ZOOM_CAP = 1.20
 STYLE_CAP = {"calm": 1.10, "moderate": 1.16, "dynamic": 1.20}
 MIN_STEP = {"calm": 0.04, "moderate": 0.06, "dynamic": 0.06}
 STATE_LEVEL = {"CONTEXT": 0, "ARGUMENT": 1, "EMPHASIS": 2}
@@ -92,16 +95,23 @@ def _candidate_states(
     height: int,
     intensity: str,
     quality_cap: float,
+    absolute_cap: float,
+    state_caps: dict[str, float],
 ) -> list[dict[str, Any]]:
     if intensity not in STYLE_CAP:
         raise ValueError(f"unknown intensity: {intensity}")
     face_base = median(max(1e-6, float(o.get("face_ratio", 0.0))) for o in rows)
-    cap = min(float(quality_cap), STYLE_CAP[intensity])
     candidates: list[dict[str, Any]] = []
 
     for state in ("CONTEXT", "ARGUMENT", "EMPHASIS"):
         desired_scale = max(1.0, STATE_TARGET[state] / face_base)
-        scale = min(desired_scale, cap)
+        effective_cap = min(
+            float(quality_cap),
+            STYLE_CAP[intensity],
+            float(absolute_cap),
+            float(state_caps[state]),
+        )
+        scale = min(desired_scale, effective_cap)
         crop = _crop_for_scale(rows, width, height, scale)
         safe, reasons = _crop_safe(rows, crop, width, height, scale)
         if safe:
@@ -112,6 +122,7 @@ def _candidate_states(
                     "crop": list(crop),
                     "face_ratio": round(face_base * scale, 4),
                     "desired_scale": round(desired_scale, 4),
+                    "effective_cap": round(effective_cap, 4),
                     "limited": scale + 1e-6 < desired_scale,
                 }
             )
@@ -185,6 +196,13 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
     config = dict(payload.get("config") or {})
     intensity = str(config.get("intensity", "moderate"))
     window_ms = int(config.get("window_ms", 1200))
+    absolute_cap = min(float(config.get("absolute_zoom_cap", ABSOLUTE_ZOOM_CAP)), ABSOLUTE_ZOOM_CAP)
+    state_caps = dict(STATE_CAP)
+    for state, value in dict(config.get("state_caps") or {}).items():
+        state = str(state).upper()
+        if state in state_caps:
+            state_caps[state] = min(float(value), ABSOLUTE_ZOOM_CAP)
+
     observations = sorted(list(payload.get("observations") or []), key=lambda o: int(o["t_ms"]))
     events = sorted(list(payload.get("semantic_events") or []), key=lambda e: (int(e["t_ms"]), str(e.get("id", ""))))
 
@@ -205,6 +223,8 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
             height=height,
             intensity=intensity,
             quality_cap=quality_cap,
+            absolute_cap=absolute_cap,
+            state_caps=state_caps,
         )
         selected = _choose_state(states, desired)
         if selected is None:
@@ -247,6 +267,7 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
                 "crop_start": list(current_crop),
                 "crop_end": target_crop,
                 "scale": selected["scale"],
+                "state_cap": selected["effective_cap"],
                 "available_states": [s["state"] for s in states],
                 "why": "semantic_importance",
                 "boundary_score": boundary["score"],
@@ -258,7 +279,13 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "version": "1.7-lite",
         "source": {"width": width, "height": height},
-        "config": {"intensity": intensity, "window_ms": window_ms, "quality_cap": quality_cap},
+        "config": {
+            "intensity": intensity,
+            "window_ms": window_ms,
+            "quality_cap": quality_cap,
+            "absolute_zoom_cap": absolute_cap,
+            "state_caps": state_caps,
+        },
         "decisions": decisions,
     }
 
