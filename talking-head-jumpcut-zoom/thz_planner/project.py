@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from .assembler import materialize_framing_decision
@@ -135,8 +136,14 @@ def plan_project(payload: dict[str, Any]) -> dict[str, Any]:
             requested_end_ms=int(event["requested_end_ms"]),
         )
         if is_hook:
-            decision.derived["hook_scale_cap"] = HOOK_SCALE_CAP
-            decision.derived["wide_boost_allowed"] = False
+            decision = replace(
+                decision,
+                derived={
+                    **decision.derived,
+                    "hook_scale_cap": HOOK_SCALE_CAP,
+                    "wide_boost_allowed": False,
+                },
+            )
         framing.append(decision)
         current_state = decision.state
         current_scale = float(decision.derived.get("motion_end_scale", current_scale))
