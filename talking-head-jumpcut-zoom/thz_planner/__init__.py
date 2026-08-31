@@ -1,4 +1,10 @@
 from .assembler import materialize_framing_decision
+from .coverage import (
+    CoverageGap,
+    output_coverage_gaps,
+    source_coverage_gaps,
+    synthesize_source_base_coverage,
+)
 from .decision import plan_transition_intent
 from .framing import (
     canonical_crop_at,
@@ -6,6 +12,15 @@ from .framing import (
     canonical_crop_pair,
     derived_scale,
     solve_normalized_window_crop,
+)
+from .global_policy import (
+    HOME_RETURN_MAX_MS,
+    HomeReturnViolation,
+    OutroBreathPolicy,
+    StateBalanceReport,
+    home_return_report,
+    outro_breath_policy,
+    state_balance_report,
 )
 from .motion import MotionPlan, ambient_drift, fit_motion_duration, plan_motion
 from .planner import DEFAULT_BANDS, PLANNER_VERSION, plan_geometry_core, render_geometry_result
@@ -19,11 +34,16 @@ from .window_queries import choose_available_state, feasible_ranges, state_is_fe
 __all__ = [
     "BoundaryCandidate",
     "ContentEdit",
+    "CoverageGap",
     "DEFAULT_BANDS",
+    "HOME_RETURN_MAX_MS",
+    "HomeReturnViolation",
     "MotionPlan",
+    "OutroBreathPolicy",
     "PLANNER_VERSION",
     "SCHEMA_VERSION",
     "ShotState",
+    "StateBalanceReport",
     "ambient_drift",
     "build_timeline_manifest",
     "canonical_crop_at",
@@ -33,7 +53,10 @@ __all__ = [
     "derived_scale",
     "feasible_ranges",
     "fit_motion_duration",
+    "home_return_report",
     "materialize_framing_decision",
+    "outro_breath_policy",
+    "output_coverage_gaps",
     "plan_geometry_core",
     "plan_motion",
     "plan_transition_intent",
@@ -42,7 +65,10 @@ __all__ = [
     "solve_ai_when",
     "solve_live_when",
     "solve_normalized_window_crop",
+    "source_coverage_gaps",
+    "state_balance_report",
     "state_is_feasible",
+    "synthesize_source_base_coverage",
     "validate_framing_decision",
     "validate_manifest_pre_render",
     "window_at",
