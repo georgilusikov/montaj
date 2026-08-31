@@ -8,7 +8,7 @@ from statistics import median
 from typing import Any
 
 STATE_TARGET = {"CONTEXT": 0.30, "ARGUMENT": 0.35, "EMPHASIS": 0.41}
-STATE_CAP = {"CONTEXT": 1.05, "ARGUMENT": 1.12, "EMPHASIS": 1.20}
+STATE_CAP = {"CONTEXT": 1.00, "ARGUMENT": 1.12, "EMPHASIS": 1.20}
 ABSOLUTE_ZOOM_CAP = 1.20
 STYLE_CAP = {"calm": 1.10, "moderate": 1.16, "dynamic": 1.20}
 MIN_STEP = {"calm": 0.04, "moderate": 0.06, "dynamic": 0.06}
@@ -357,7 +357,6 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
 
     for index, event in enumerate(events):
         event_ms = int(event["t_ms"])
-
         # If the previous zoom episode already ended, materialize its return before
         # interpreting this semantic beat. This prevents ARGUMENT from sticking forever.
         if pending_return is not None and event_ms >= int(pending_return["at_ms"]):
