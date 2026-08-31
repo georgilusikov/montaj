@@ -131,7 +131,7 @@ def plan_project(payload: dict[str, Any]) -> dict[str, Any]:
             "framing_coverage_policy": "explicit_source_base_v1",
         },
     )
-    validation = validate_manifest_pre_render(manifest, quality=quality)
+    validation = validate_manifest_pre_render(manifest, quality=quality, pace=pace)
     return {
         "manifest": manifest,
         "decision_summary": tuple(decisions),
