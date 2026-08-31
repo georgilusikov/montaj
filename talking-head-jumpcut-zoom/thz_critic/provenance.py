@@ -70,6 +70,40 @@ def expected_inputs_sha256(provenance: CriticProvenance) -> str:
     )
 
 
+def build_bound_provenance(
+    *,
+    critic_version: str,
+    script_sha256: str,
+    master_sha256: str,
+    manifest_sha256: str,
+    analysis_sha256: str | None,
+    renderer_program_sha256: str | None,
+    pass1_independent: bool = True,
+) -> CriticProvenance:
+    """Construct provenance with inputs_sha256 derived from named bound inputs.
+
+    Callers do not provide inputs_sha256 directly; this prevents a valid-looking but
+    semantically misbound critic report from being assembled by accident.
+    """
+    values = {
+        "analysis_sha256": analysis_sha256,
+        "manifest_sha256": manifest_sha256,
+        "renderer_program_sha256": renderer_program_sha256,
+    }
+    provenance = CriticProvenance(
+        critic_version=critic_version,
+        script_sha256=script_sha256,
+        master_sha256=master_sha256,
+        inputs_sha256=hash_named_inputs(values),
+        pass1_independent=pass1_independent,
+        manifest_sha256=manifest_sha256,
+        analysis_sha256=analysis_sha256,
+        renderer_program_sha256=renderer_program_sha256,
+    )
+    validate_provenance(provenance, require_bound_inputs=True)
+    return provenance
+
+
 def validate_provenance(
     provenance: CriticProvenance,
     *,
