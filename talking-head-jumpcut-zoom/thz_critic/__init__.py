@@ -1,6 +1,7 @@
 from .framing import RenderedCompositionSample, composition_safe_report, motion_fidelity_report
 from .provenance import (
     CriticProvenance,
+    build_bound_provenance,
     combine_hashes,
     expected_inputs_sha256,
     hash_named_inputs,
@@ -18,6 +19,7 @@ __all__ = [
     "Severity",
     "CriticProvenance",
     "RenderedCompositionSample",
+    "build_bound_provenance",
     "build_critic_report",
     "canonical_report_json",
     "combine_hashes",
