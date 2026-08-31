@@ -129,6 +129,7 @@ class FramingDecision:
     crop_start: CanonicalCrop
     crop_end: CanonicalCrop
     anchor_policy: str
+    time_basis: str = "source"
     why: dict[str, Any] = field(default_factory=dict)
     desired: dict[str, Any] = field(default_factory=dict)
     can: dict[str, Any] = field(default_factory=dict)
