@@ -18,7 +18,7 @@ SKILL.md
 
 Every framing change answers four questions:
 
-1. **WHY** — is this moment semantically important enough to change framing?
+1. **WHY** — is this moment semantically important enough to change framing, and is the energy building, peaking, releasing, or staying neutral?
 2. **CAN** — which of CONTEXT / ARGUMENT / EMPHASIS are physically safe here?
 3. **WHEN** — which nearby boundary is safe for the transition?
 4. **HOW** — hold, step/reframe, or slow_push?
@@ -29,7 +29,7 @@ Gaze/head pose may improve WHEN, but must not create WHY.
 
 `analysis.json` may contain only observations/evidence:
 
-- transcript semantic events (`importance`, optional `type`)
+- transcript semantic events (`importance`, optional `type`, optional `direction`)
 - face ratio / face center / hair top
 - caption overlap / hard gesture or prop block
 - blink / blur flags
@@ -109,7 +109,9 @@ The selected crop is one fixed crop for the event window; do not assume the rend
 
 ## WHY
 
-Input semantic event contains `importance` in `[0,1]` and optional semantic `type`.
+Each semantic event contains `importance` in `[0,1]` and may also contain semantic `type` and `direction`.
+
+### Importance = how much emphasis the sentence deserves
 
 Simple default mapping:
 
@@ -117,7 +119,26 @@ Simple default mapping:
 - `0.40..0.74` -> ARGUMENT
 - `>=0.75` -> EMPHASIS
 
-This mapping is deliberately simple and easy to calibrate later.
+### Direction = where the visual energy should move
+
+Optional values:
+
+- `build` — build tension, but never jump directly to EMPHASIS; at most move toward ARGUMENT.
+- `peak` — use the normal importance/type target; a strong event may reach EMPHASIS.
+- `release` — return toward CONTEXT even if the sentence itself is important.
+- `neutral` — explicitly preserve the current framing unless geometry forces degradation.
+
+If `direction` is absent or unknown, the planner keeps the previous v1.7 Lite behavior and uses importance/type directly.
+
+This gives dramaturgy without a pattern engine. Example:
+
+```text
+build   -> ARGUMENT
+peak    -> EMPHASIS
+release -> CONTEXT
+```
+
+But this is **not** a mandatory repeating sequence. Events can be `peak -> release -> build`, several neutral events can hold the same state, and missing intermediate states simply collapse according to geometry. Patterns such as Ladder/Wave remain descriptions of the resulting timeline, not planning rules.
 
 ## WHEN
 
@@ -159,10 +180,11 @@ No pattern engine in v1.7 Lite. Ladder/Wave/Punch may be used later as descripti
   "start_ms": 1200,
   "end_ms": 3100,
   "state": "EMPHASIS",
+  "direction": "peak",
   "motion": "slow_push",
   "crop_start": [0, 0, 1080, 1920],
   "crop_end": [54, 80, 964, 1714],
-  "why": "semantic_importance"
+  "why": "semantic_peak"
 }
 ```
 
@@ -188,6 +210,8 @@ No critic registry, provenance framework, pattern lifecycle, director provider, 
 - `zoom_planner.py` produces a valid plan from observations + semantic events;
 - 1–3 feasible states work automatically;
 - WHY is independent from gaze;
+- importance controls emphasis level while direction can express build / peak / release / neutral;
+- direction does not introduce a hard repeating zoom pattern;
 - 4K quality cannot silently create an aggressive zoom;
 - blink/blur/gesture safety is preserved;
 - renderer accepts canonical crop coordinates;
