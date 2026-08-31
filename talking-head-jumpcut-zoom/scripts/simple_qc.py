@@ -29,6 +29,11 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
             continue
         state = str(decision.get("state", "CONTEXT")).upper()
         state_cap = min(state_caps.get(state, absolute_cap), absolute_cap)
+        ratchet = str(decision.get("ratchet") or "").lower()
+        if ratchet == "ratchet_2":
+            state_cap = min(max(state_cap, 1.16), absolute_cap)
+        elif ratchet == "ratchet_3":
+            state_cap = min(max(state_cap, 1.20), absolute_cap)
         end_scale = None
 
         for key in ("crop_start", "crop_end"):

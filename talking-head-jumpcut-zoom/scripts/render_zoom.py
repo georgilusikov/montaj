@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+"""
+Montaj v1.7 Lite Motion & Crop Renderer.
+Executes exact pixel crops from zoom_plan.json via FFmpeg sendcmd filter with:
+1. 60 Hz Cubic Easing for slow_push (prevents 10 Hz stair-stepping).
+2. Apple ColorSync Rec.709 metadata tags (-movflags +write_colr).
+3. Audio mastering with EBU R128 (-14 LUFS / True-Peak -1.5 dBTP).
+"""
 from __future__ import annotations
 
 import argparse
@@ -30,8 +37,7 @@ def _timeline_items(plan: dict[str, Any]) -> list[dict[str, Any]]:
         item = dict(returned)
         item["_priority"] = 0
         items.append(item)
-    # At the same timestamp return first, then new semantic change. A stale return can
-    # never erase a new punch.
+    # Return first at same timestamp, then new semantic punch
     items.sort(key=lambda item: (int(item.get("start_ms", 0)), int(item.get("_priority", 1))))
     return items
 
@@ -101,17 +107,24 @@ def render(input_video: str, plan: dict[str, Any], output_video: str) -> None:
         x, y, w, h = initial
         crop = f"crop@thz=w={w}:h={h}:x={x}:y={y}:exact=1"
         if commands:
-            vf = f"sendcmd=f={cmd_path},{crop},scale={width}:{height}:flags=lanczos,setsar=1"
+            vf = f"sendcmd=f={cmd_path},{crop},scale={width}:{height}:flags=lanczos,setsar=1,format=yuv420p"
         else:
-            vf = f"{crop},scale={width}:{height}:flags=lanczos,setsar=1"
+            vf = f"{crop},scale={width}:{height}:flags=lanczos,setsar=1,format=yuv420p"
+
+        # Audio loudnorm filter for social platforms (-14 LUFS, TP -1.5)
+        af = "loudnorm=I=-14:TP=-1.5:LRA=11"
 
         args = [
             "ffmpeg", "-y", "-i", input_video,
             "-vf", vf,
+            "-af", af,
             "-map", "0:v:0", "-map", "0:a?",
-            "-c:v", "libx264", "-crf", "18", "-preset", "medium",
+            "-c:v", "libx264", "-crf", "17", "-preset", "medium",
+            "-color_primaries", "bt709",
+            "-color_trc", "bt709",
+            "-colorspace", "bt709",
             "-c:a", "aac", "-b:a", "192k",
-            "-movflags", "+faststart",
+            "-movflags", "+faststart+write_colr",
             output_video,
         ]
         subprocess.run(args, check=True)

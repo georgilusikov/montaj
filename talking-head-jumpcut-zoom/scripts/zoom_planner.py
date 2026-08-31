@@ -1,8 +1,17 @@
 #!/usr/bin/env python3
+"""
+Montaj v1.7 Lite Semantic Zoom Planner with:
+1. Two-phase architecture (Dense timeline input).
+2. WHY (semantic importance + direction + ratchet escalation).
+3. Eye-line anchor formula for slow_push: Delta_Y = (Y_eyes - Y_center) * (1 - 1/scale).
+4. Tripod Lock: Segment-wide median crop lock (no per-frame drift).
+5. Strict defect filtering (EAR blink, MAR mouth distortion, Laplacian blur, Farneback velocity).
+"""
 from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 from statistics import median
 from typing import Any
@@ -12,11 +21,8 @@ STATE_CAP = {"CONTEXT": 1.00, "ARGUMENT": 1.12, "EMPHASIS": 1.20}
 ABSOLUTE_ZOOM_CAP = 1.20
 STYLE_CAP = {"calm": 1.10, "moderate": 1.16, "dynamic": 1.20}
 MIN_STEP = {"calm": 0.04, "moderate": 0.06, "dynamic": 0.06}
-UPPER_STATE_MIN_STEP = 0.03
 MIN_DWELL_MS = {"calm": 2000, "moderate": 1500, "dynamic": 1200}
 
-# Meaning creates zooms. Cadence only helps choose boundaries and asks the separate
-# jumpcut layer for a visual refresh when the picture would otherwise stay static.
 PREFERRED_CHANGE_MS = {"calm": 3000, "moderate": 2500, "dynamic": 2200}
 CADENCE_BONUS_MAX = 0.10
 CADENCE_TOLERANCE_MS = 900
@@ -24,8 +30,13 @@ VISUAL_REFRESH_TARGET_MS = {"calm": 4000, "moderate": 3500, "dynamic": 3000}
 VISUAL_REFRESH_MAX_MS = {"calm": 5500, "moderate": 5000, "dynamic": 4500}
 CADENCE_REQUEST_HALF_WINDOW_MS = 750
 
-# Slow BUILD is optional, not the default. The semantic layer must explicitly request
-# it with motion_hint="slow_push". This prevents every build from becoming camera drift.
+# Ratchet (Лесенка) progression levels for listing/arguments
+RATCHET_LEVELS = {
+    "RATCHET_1": 1.08,
+    "RATCHET_2": 1.16,
+    "RATCHET_3": 1.20,
+}
+
 SOFT_BUILD_SCALE = {"calm": 1.03, "moderate": 1.05, "dynamic": 1.06}
 SOFT_BUILD_PUSH_MS = {"calm": 2800, "moderate": 2400, "dynamic": 2000}
 
@@ -40,7 +51,7 @@ STRONG_PEAK_IMPORTANCE = 0.92
 EMPHASIS_IMPORTANCE = 0.85
 FACE_EDGE_MARGIN = 0.035
 STATE_LEVEL = {"CONTEXT": 0, "ARGUMENT": 1, "EMPHASIS": 2}
-SEMANTIC_DIRECTIONS = {"BUILD", "PEAK", "RELEASE", "NEUTRAL"}
+SEMANTIC_DIRECTIONS = {"BUILD", "PEAK", "RELEASE", "NEUTRAL", "RATCHET_1", "RATCHET_2", "RATCHET_3"}
 MOTION_HINTS = {"AUTO", "STEP", "SLOW_PUSH"}
 
 
@@ -75,9 +86,14 @@ def _directed_state(base_desired: str, current_state: str, raw_direction: Any) -
         return "CONTEXT", "release"
     if direction == "PEAK":
         return base_desired, "peak"
+    if direction == "RATCHET_1":
+        return "ARGUMENT", "ratchet_1"
+    if direction == "RATCHET_2":
+        return "ARGUMENT", "ratchet_2"
+    if direction == "RATCHET_3":
+        return "EMPHASIS", "ratchet_3"
 
-    # BUILD rises at most to ARGUMENT. It may later be rendered as a partial slow push,
-    # but only when explicitly requested by the semantic layer.
+    # BUILD rises at most to ARGUMENT
     if STATE_LEVEL[current_state] >= STATE_LEVEL["ARGUMENT"]:
         return current_state, "build"
     if STATE_LEVEL[base_desired] >= STATE_LEVEL["ARGUMENT"]:
@@ -113,15 +129,39 @@ def _samples(observations: list[dict[str, Any]], center_ms: int, window_ms: int)
     return [min(observations, key=lambda o: abs(int(o["t_ms"]) - center_ms))]
 
 
-def _crop_for_scale(rows: list[dict[str, Any]], width: int, height: int, scale: float) -> tuple[int, int, int, int]:
+def _crop_for_scale_with_anchor(
+    rows: list[dict[str, Any]],
+    width: int,
+    height: int,
+    scale: float,
+) -> tuple[int, int, int, int]:
+    """
+    Calculate crop (x, y, w, h) using Tripod Lock and Eye-Anchor formula:
+    Delta_Y = (Y_eyes - Y_center) * (1 - 1/scale)
+    """
     if scale <= 1.000001:
         return 0, 0, width, height
+
     crop_w = _even(width / scale)
     crop_h = _even(height / scale)
+
+    # Tripod Lock: Median landmarks across window
     cx = median(float(o.get("face_cx", 0.5)) for o in rows)
     cy = median(float(o.get("face_cy", 0.34)) for o in rows)
+
+    # Detected eye line Y or fallback to face cy - 0.05
+    y_eyes_norm = median(float(o.get("eye_line_y", cy - 0.05)) for o in rows)
+    y_eyes_px = y_eyes_norm * height
+    y_center_px = 0.50 * height
+
+    # Eye Anchor Holding formula: Delta_Y = (Y_eyes - Y_center) * (1 - 1/scale)
+    delta_y_anchor = (y_eyes_px - y_center_px) * (1.0 - 1.0 / scale)
+
+    # Base centered Y crop adjusted with eye anchor
+    base_y = (height - crop_h) / 2.0 + delta_y_anchor
+
     x = _even(_clamp(cx * width - crop_w / 2, 0, width - crop_w), 0)
-    y = _even(_clamp(cy * height - 0.34 * crop_h, 0, height - crop_h), 0)
+    y = _even(_clamp(base_y, 0, height - crop_h), 0)
     return x, y, crop_w, crop_h
 
 
@@ -179,6 +219,9 @@ def _crop_safe(
     return not reasons, reasons
 
 
+UPPER_STATE_MIN_STEP = 0.025
+
+
 def _candidate_states(
     rows: list[dict[str, Any]],
     *,
@@ -195,7 +238,7 @@ def _candidate_states(
         desired_scale = max(1.0, STATE_TARGET[state] / face_base)
         effective_cap = min(quality_cap, STYLE_CAP[intensity], absolute_cap, float(state_caps[state]))
         scale = min(desired_scale, effective_cap)
-        crop = _crop_for_scale(rows, width, height, scale)
+        crop = _crop_for_scale_with_anchor(rows, width, height, scale)
         safe, _ = _crop_safe(rows, crop, width, height, scale)
         if safe:
             candidates.append(
@@ -220,8 +263,6 @@ def _candidate_states(
         threshold = UPPER_STATE_MIN_STEP if upper_pair else MIN_STEP[intensity]
         if delta >= threshold:
             distinct.append(candidate)
-        # If ARGUMENT and EMPHASIS are genuinely indistinguishable, keep ARGUMENT.
-        # It is the common working accent; rare EMPHASIS may safely downgrade to it.
     return distinct
 
 
@@ -245,7 +286,7 @@ def _soft_build_state(
     scale = min(float(selected["scale"]), SOFT_BUILD_SCALE[intensity])
     if scale <= 1.000001:
         return selected
-    crop = _crop_for_scale(rows, width, height, scale)
+    crop = _crop_for_scale_with_anchor(rows, width, height, scale)
     safe, _ = _crop_safe(rows, crop, width, height, scale)
     if not safe:
         return selected
@@ -254,6 +295,34 @@ def _soft_build_state(
     result["crop"] = list(crop)
     result["face_ratio"] = round(median(float(o.get("face_ratio", 0.0)) for o in rows) * scale, 4)
     result["soft_build"] = True
+    return result
+
+
+def _ratchet_state(
+    direction: str,
+    selected: dict[str, Any],
+    rows: list[dict[str, Any]],
+    *,
+    width: int,
+    height: int,
+    intensity: str,
+    quality_cap: float,
+    absolute_cap: float,
+) -> dict[str, Any]:
+    """
+    Apply ratchet escalation scale (1.08 -> 1.16 -> 1.20) for lists/arguments.
+    """
+    target_scale = RATCHET_LEVELS.get(direction.upper(), float(selected["scale"]))
+    effective_scale = min(target_scale, quality_cap, STYLE_CAP[intensity], absolute_cap)
+    crop = _crop_for_scale_with_anchor(rows, width, height, effective_scale)
+    safe, _ = _crop_safe(rows, crop, width, height, effective_scale)
+    if not safe:
+        return selected
+    result = dict(selected)
+    result["scale"] = round(effective_scale, 4)
+    result["crop"] = list(crop)
+    result["face_ratio"] = round(median(float(o.get("face_ratio", 0.0)) for o in rows) * effective_scale, 4)
+    result["ratchet"] = direction.lower()
     return result
 
 
@@ -272,8 +341,22 @@ def _choose_boundary(
 ) -> dict[str, Any] | None:
     ranked: list[tuple[float, int, str, dict[str, Any]]] = []
     for raw in candidates:
+        # Defect rejection: EAR, MAR, blur, optical flow velocity
         if any(raw.get(k) for k in ("blink", "blur", "hard_block", "eyes_closed", "long_eye_closure", "pose_unsafe", "strong_head_turn")):
             continue
+        ear = raw.get("ear")
+        if ear is not None and float(ear) < 0.20:
+            continue
+        mar = raw.get("mar")
+        if mar is not None and float(mar) > 0.45:
+            continue
+        laplacian_var = raw.get("laplacian_var")
+        if laplacian_var is not None and float(laplacian_var) < 60.0:
+            continue
+        flow_speed = raw.get("flow_speed_px") or raw.get("motion_speed_px")
+        if flow_speed is not None and float(flow_speed) > 2.0:
+            continue
+
         ms = int(raw["ms"])
         if min_ms is not None and ms < min_ms:
             continue
@@ -450,6 +533,12 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
         gradual_build = direction == "build" and current_state == "CONTEXT" and motion_hint == "SLOW_PUSH"
         if gradual_build:
             selected = _soft_build_state(selected, rows, width=width, height=height, intensity=intensity)
+        elif direction.startswith("ratchet_"):
+            selected = _ratchet_state(
+                direction, selected, rows,
+                width=width, height=height, intensity=intensity,
+                quality_cap=quality_cap, absolute_cap=absolute_cap,
+            )
 
         target_crop = list(selected["crop"])
         will_change = target_crop != current_crop
@@ -505,7 +594,7 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
             if next_event is not None:
                 next_direction = str(next_event.get("direction") or "").strip().upper()
                 next_ms = int(next_event["t_ms"])
-                continued_by_next = next_direction in {"BUILD", "PEAK"} and next_ms <= episode_end_ms + CONTINUATION_GRACE_MS
+                continued_by_next = (next_direction in {"BUILD", "PEAK"} or next_direction.startswith("RATCHET_")) and next_ms <= episode_end_ms + CONTINUATION_GRACE_MS
             auto_return = not continued_by_next
             if auto_return:
                 pending_return = {
@@ -555,6 +644,7 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
             "auto_return": auto_return,
             "continued_by_next": continued_by_next,
             "soft_build": gradual_build and bool(selected.get("soft_build", False)),
+            "ratchet": selected.get("ratchet"),
         })
 
         current_state = selected["state"]
@@ -595,6 +685,7 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
             "zoom_duration_bands_ms": ZOOM_DURATION_BANDS_MS,
             "soft_build_scale": SOFT_BUILD_SCALE[intensity],
             "soft_build_push_ms": SOFT_BUILD_PUSH_MS[intensity],
+            "ratchet_levels": RATCHET_LEVELS,
         },
         "decisions": decisions,
         "returns": returns,
