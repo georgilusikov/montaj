@@ -1,6 +1,12 @@
 from .assembler import materialize_framing_decision
 from .decision import plan_transition_intent
-from .framing import canonical_crop_at, canonical_crop_pair, derived_scale
+from .framing import (
+    canonical_crop_at,
+    canonical_crop_for_window,
+    canonical_crop_pair,
+    derived_scale,
+    solve_normalized_window_crop,
+)
 from .motion import MotionPlan, ambient_drift, fit_motion_duration, plan_motion
 from .planner import DEFAULT_BANDS, PLANNER_VERSION, plan_geometry_core, render_geometry_result
 from .schema import SCHEMA_VERSION, ShotState
@@ -21,6 +27,7 @@ __all__ = [
     "ambient_drift",
     "build_timeline_manifest",
     "canonical_crop_at",
+    "canonical_crop_for_window",
     "canonical_crop_pair",
     "choose_available_state",
     "derived_scale",
@@ -34,6 +41,7 @@ __all__ = [
     "resolve_why",
     "solve_ai_when",
     "solve_live_when",
+    "solve_normalized_window_crop",
     "state_is_feasible",
     "validate_framing_decision",
     "validate_manifest_pre_render",
