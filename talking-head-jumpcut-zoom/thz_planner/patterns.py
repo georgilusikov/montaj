@@ -42,6 +42,10 @@ PATTERN_WEIGHTS = {
     "history": 0.15,
 }
 
+# A pattern is a shaping prior, not a mandatory template. Unthemed/weak evidence
+# leaves WHY unshaped. This threshold is provisional and calibration-owned.
+PATTERN_ACTIVATION_THRESHOLD = 0.35
+
 STATE_LEVEL = {
     ShotState.CONTEXT: 0,
     ShotState.ARGUMENT: 1,
@@ -98,9 +102,57 @@ def pattern_candidates(
     return stable_candidate_sort(candidates)
 
 
-def select_pattern(**kwargs) -> dict[str, object] | None:
-    candidates = pattern_candidates(**kwargs)
-    return candidates[0] if candidates else None
+def select_pattern(
+    *,
+    theme_tag: str | None,
+    available_states: set[ShotState],
+    semantic_fit: float,
+    prosody_fit: float,
+    history_penalty: dict[str, float] | None = None,
+    activation_threshold: float = PATTERN_ACTIVATION_THRESHOLD,
+) -> dict[str, object] | None:
+    # Unknown/absent theme evidence must not silently impose a pattern.
+    if theme_tag not in THEME_PRIORS:
+        return None
+    candidates = pattern_candidates(
+        theme_tag=theme_tag,
+        available_states=available_states,
+        semantic_fit=semantic_fit,
+        prosody_fit=prosody_fit,
+        history_penalty=history_penalty,
+    )
+    if not candidates or float(candidates[0]["score"]) < activation_threshold:
+        return None
+    return candidates[0]
+
+
+def active_pattern_candidate(
+    pattern_id: str | None,
+    *,
+    theme_tag: str | None,
+    available_states: set[ShotState],
+    semantic_fit: float,
+    prosody_fit: float,
+    history_penalty: dict[str, float] | None = None,
+) -> dict[str, object] | None:
+    """Resolve an already-active pattern under the current state feasibility.
+
+    An active run may continue even if a later semantic event has no theme tag, but
+    it is dropped immediately when its required state set can no longer degrade to a
+    valid candidate.
+    """
+    if not pattern_id:
+        return None
+    for candidate in pattern_candidates(
+        theme_tag=theme_tag,
+        available_states=available_states,
+        semantic_fit=semantic_fit,
+        prosody_fit=prosody_fit,
+        history_penalty=history_penalty,
+    ):
+        if candidate["pattern_id"] == pattern_id:
+            return candidate
+    return None
 
 
 def shape_state_with_pattern(
@@ -108,6 +160,7 @@ def shape_state_with_pattern(
     *,
     semantic_desired_state: ShotState,
     current_state: ShotState,
+    pattern_elapsed_ms: int = 0,
 ) -> tuple[ShotState, bool]:
     """Use pattern sequence as a semantic ceiling-preserving shaping prior.
 
@@ -115,21 +168,33 @@ def shape_state_with_pattern(
     EMPHASIS request through ARGUMENT first, or perform its declared reset, but it
     can never elevate a CONTEXT/ARGUMENT WHY request into a stronger state.
     """
+    if pattern_elapsed_ms < 0:
+        raise ValueError("pattern_elapsed_ms must be non-negative")
     if pattern is None or semantic_desired_state is ShotState.CONTEXT:
         return semantic_desired_state, False
 
     usable = tuple(pattern.get("usable_states") or ())
-    if not usable or current_state not in usable:
+    metadata = pattern.get("metadata")
+    if not usable or not isinstance(metadata, PatternSpec):
         return semantic_desired_state, False
 
-    metadata = pattern.get("metadata")
-    index = usable.index(current_state)
-    if index + 1 < len(usable):
-        candidate = usable[index + 1]
-    elif isinstance(metadata, PatternSpec) and metadata.required_reset:
-        candidate = usable[0]
+    # Expiry is deterministic. Patterns that owe a reset return toward the first
+    # usable state; non-reset patterns simply stop shaping and hand control to WHY.
+    if pattern_elapsed_ms > metadata.max_duration_ms:
+        if metadata.required_reset:
+            candidate = usable[0]
+        else:
+            return semantic_desired_state, False
+    elif current_state not in usable:
+        return semantic_desired_state, False
     else:
-        candidate = usable[-1]
+        index = usable.index(current_state)
+        if index + 1 < len(usable):
+            candidate = usable[index + 1]
+        elif metadata.required_reset:
+            candidate = usable[0]
+        else:
+            candidate = usable[-1]
 
     ceiling = STATE_LEVEL[semantic_desired_state]
     if STATE_LEVEL[candidate] > ceiling:
