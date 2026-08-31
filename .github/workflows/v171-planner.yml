@@ -10,6 +10,7 @@ on:
       - 'talking-head-jumpcut-zoom/thz_render/**'
       - 'talking-head-jumpcut-zoom/thz_semantics/**'
       - 'talking-head-jumpcut-zoom/tests/**'
+      - 'talking-head-jumpcut-zoom/examples/**'
       - 'talking-head-jumpcut-zoom/docs/V1_7_1_SPEC.md'
       - '.github/workflows/v171-planner.yml'
 
@@ -27,3 +28,9 @@ jobs:
       - name: Unit tests
         working-directory: talking-head-jumpcut-zoom
         run: python -m unittest discover -s tests -v
+      - name: Deterministic CLI smoke
+        working-directory: talking-head-jumpcut-zoom
+        run: |
+          python -m thz_planner.cli examples/v171_planner_input.json /tmp/v171_a.json
+          python -m thz_planner.cli examples/v171_planner_input.json /tmp/v171_b.json
+          cmp /tmp/v171_a.json /tmp/v171_b.json
