@@ -5,7 +5,7 @@ import unittest
 
 from thz_planner.cli import main as cli_main
 from thz_planner.project import plan_project
-from thz_planner.schema import canonical_json
+from thz_planner.schema import ShotState, canonical_json
 
 
 def payload():
@@ -88,6 +88,7 @@ class ProjectPlannerTests(unittest.TestCase):
         self.assertEqual(len(semantic), 1)
         self.assertEqual(len(coverage), 2)
         self.assertEqual(a["manifest"]["provenance"]["framing_coverage_policy"], "explicit_source_base_v1")
+        self.assertEqual(a["manifest"]["provenance"]["pattern_lifecycle_policy"], "semantic_ceiling_v1")
 
     def test_hook_uses_no_wide_boost_and_caps_scale_at_116(self):
         data = payload()
@@ -114,6 +115,47 @@ class ProjectPlannerTests(unittest.TestCase):
         provenance = result["manifest"]["provenance"]
         self.assertEqual(provenance["hook_scale_cap"], 1.16)
         self.assertIn("hook_geometry_output_hash", provenance)
+
+    def test_active_pattern_continues_without_repeated_theme_and_resets(self):
+        data = payload()
+        data["semantic_events"].append(
+            {
+                "event_id": "evt_02",
+                "segment_id": "frame_02",
+                "t_ms": 1500,
+                "requested_end_ms": 2200,
+                "context": {
+                    "semantic_weight": 1.0,
+                    "salience": 1.0,
+                    "prosody": 1.0,
+                    "narrative": 0.0,
+                    "theme_tag": None,
+                    "act_reset": False,
+                },
+                "boundary_candidates": [
+                    {
+                        "candidate_id": "b2",
+                        "ms": 1600,
+                        "semantic_fit": 1.0,
+                        "word_boundary": True,
+                    }
+                ],
+            }
+        )
+        result = plan_project(data)
+        first, second = result["decision_summary"]
+        self.assertEqual(first["pattern_id"], "ladder")
+        self.assertEqual(second["pattern_id"], "ladder")
+        self.assertTrue(second["pattern_shaped"])
+        self.assertEqual(second["pattern_target_state"], ShotState.CONTEXT)
+        frame_02 = next(
+            item
+            for item in result["manifest"]["framing_decisions"]
+            if item.segment_id == "frame_02"
+        )
+        self.assertEqual(frame_02.state, ShotState.CONTEXT)
+        self.assertEqual(frame_02.desired["pattern_id"], "ladder")
+        self.assertTrue(frame_02.desired["pattern_shaped"])
 
     def test_cli_writes_canonical_json(self):
         with tempfile.TemporaryDirectory() as tmp:
