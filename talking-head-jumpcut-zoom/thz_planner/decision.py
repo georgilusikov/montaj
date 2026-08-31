@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .motion import plan_motion
-from .patterns import select_pattern, shape_state_with_pattern
+from .patterns import PatternSpec, active_pattern_candidate, select_pattern, shape_state_with_pattern
 from .schema import ShotState
 from .when_solver import BoundaryCandidate, solve_ai_when, solve_live_when
 from .why import resolve_why
@@ -27,12 +27,14 @@ def plan_transition_intent(
     segment_start_ms: int = 0,
     history_penalty: dict[str, float] | None = None,
     pace: str = "neutral",
+    active_pattern_id: str | None = None,
+    active_pattern_started_ms: int | None = None,
 ) -> dict[str, object]:
-    """P0C deterministic decision core through WHY/PATTERN/WHEN/MOTION.
+    """Deterministic decision core through WHY/PATTERN/WHEN/MOTION.
 
-    WHY owns semantic intensity. PATTERN may shape that target downward into a
-    sequence but cannot increase it. Boundary candidates are then hard-masked
-    against temporal feasibility of the shaped selected state.
+    WHY owns semantic intensity. PATTERN is an optional state-sequence prior with a
+    deterministic lifecycle and may only shape at or below the WHY ceiling.
+    Boundary candidates are then hard-masked against temporal feasibility.
     """
     why = resolve_why(
         semantic_weight=semantic_weight,
@@ -47,17 +49,57 @@ def plan_transition_intent(
 
     semantic_desired_state = why["desired_state"]
     available_states = {item.state for item in window.get("distinct_states", [])}
-    pattern = select_pattern(
-        theme_tag=theme_tag,
-        available_states=available_states,
-        semantic_fit=float(why["score"]),
-        prosody_fit=prosody,
-        history_penalty=history_penalty,
+
+    # An explicit act reset terminates the previous pattern run. CONTEXT WHY also
+    # remains unshaped; a pattern must never manufacture activity from weak meaning.
+    if act_reset:
+        active_pattern_id = None
+        active_pattern_started_ms = None
+
+    pattern = None
+    continuing_active = False
+    if semantic_desired_state is not ShotState.CONTEXT:
+        pattern = active_pattern_candidate(
+            active_pattern_id,
+            theme_tag=theme_tag,
+            available_states=available_states,
+            semantic_fit=float(why["score"]),
+            prosody_fit=prosody,
+            history_penalty=history_penalty,
+        )
+        continuing_active = pattern is not None
+        if pattern is None:
+            pattern = select_pattern(
+                theme_tag=theme_tag,
+                available_states=available_states,
+                semantic_fit=float(why["score"]),
+                prosody_fit=prosody,
+                history_penalty=history_penalty,
+            )
+
+    pattern_id = pattern.get("pattern_id") if isinstance(pattern, dict) else None
+    if continuing_active and active_pattern_started_ms is not None:
+        pattern_started_ms = int(active_pattern_started_ms)
+    elif pattern is not None:
+        pattern_started_ms = semantic_at_ms
+    else:
+        pattern_started_ms = None
+    pattern_elapsed_ms = (
+        max(0, semantic_at_ms - pattern_started_ms)
+        if pattern_started_ms is not None
+        else 0
     )
+    metadata = pattern.get("metadata") if isinstance(pattern, dict) else None
+    pattern_expired = (
+        isinstance(metadata, PatternSpec)
+        and pattern_elapsed_ms > metadata.max_duration_ms
+    )
+
     pattern_target_state, pattern_shaped = shape_state_with_pattern(
         pattern,
         semantic_desired_state=semantic_desired_state,
         current_state=current_state,
+        pattern_elapsed_ms=pattern_elapsed_ms,
     )
 
     selected_state = choose_available_state(window, pattern_target_state)
@@ -69,6 +111,10 @@ def plan_transition_intent(
             "pattern_target_state": pattern_target_state,
             "pattern_shaped": pattern_shaped,
             "pattern": pattern,
+            "pattern_id": pattern_id,
+            "pattern_started_ms": pattern_started_ms,
+            "pattern_elapsed_ms": pattern_elapsed_ms,
+            "pattern_expired": pattern_expired,
         }
 
     temporally_safe = [
@@ -93,6 +139,10 @@ def plan_transition_intent(
             "pattern_shaped": pattern_shaped,
             "selected_state": selected_state,
             "pattern": pattern,
+            "pattern_id": pattern_id,
+            "pattern_started_ms": pattern_started_ms,
+            "pattern_elapsed_ms": pattern_elapsed_ms,
+            "pattern_expired": pattern_expired,
         }
 
     motion = plan_motion(
@@ -113,6 +163,10 @@ def plan_transition_intent(
         "selected_state": selected_state,
         "degraded": selected_state.state is not pattern_target_state,
         "pattern": pattern,
+        "pattern_id": pattern_id,
+        "pattern_started_ms": pattern_started_ms,
+        "pattern_elapsed_ms": pattern_elapsed_ms,
+        "pattern_expired": pattern_expired,
         "when": when,
         "motion": motion,
     }
