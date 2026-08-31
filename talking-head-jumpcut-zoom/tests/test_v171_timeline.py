@@ -70,6 +70,33 @@ class TimelineContractTests(unittest.TestCase):
                 source_type="live",
             )
 
+    def test_output_framing_cannot_cross_jumpcut_boundary(self):
+        crop = CanonicalCrop(0, 0, 1080, 1920)
+        crossing = FramingDecision(
+            segment_id="crossing",
+            start_ms=400,
+            end_ms=600,
+            state=ShotState.CONTEXT,
+            motion_intent=MotionIntent.STATIC,
+            primitive=RenderPrimitive.HOLD,
+            crop_start=crop,
+            crop_end=crop,
+            anchor_policy="test",
+            time_basis="output",
+            derived={"motion_duration_ms": 0},
+        )
+        with self.assertRaisesRegex(ValueError, "output framing"):
+            build_timeline_manifest(
+                analysis_hash="a",
+                config_hash="c",
+                content_edits=[
+                    ContentEdit("a", 1000, 1500, 0, 500),
+                    ContentEdit("b", 2000, 2500, 500, 1000),
+                ],
+                framing_decisions=[crossing],
+                source_type="live",
+            )
+
     def test_manifest_is_byte_stable_and_pre_render_valid(self):
         kwargs = dict(
             analysis_hash="a",
