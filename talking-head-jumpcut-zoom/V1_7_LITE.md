@@ -54,9 +54,11 @@ Default desired face-ratio targets remain provisional:
 
 Default artistic caps:
 
-- CONTEXT: **1.05x**
-- ARGUMENT: **1.12x**
-- EMPHASIS: **1.20x**
+- CONTEXT: **1.00x** — exact source framing, no crop;
+- ARGUMENT: **1.12x**;
+- EMPHASIS: **1.20x**.
+
+`CONTEXT` is intentionally special: it is the visual home/base, so it does **not** chase the 0.30 face-ratio target by cropping. The target remains diagnostic; the actual default CONTEXT crop is always the full source frame.
 
 Global absolute cap: **1.20x**.
 
@@ -79,7 +81,7 @@ moderate EMPHASIS
 => 1.16x maximum
 ```
 
-The planner computes scale from actual face size. If three distinct safe states do not fit, use two; if two do not fit, use one. Never invent a fake third state. `scale < 1.00` is forbidden.
+The planner computes ARGUMENT/EMPHASIS scale from actual face size. CONTEXT remains exact source framing. If distinct safe accent states do not fit, collapse them; never invent a fake third state. `scale < 1.00` is forbidden.
 
 ## Geometry safety
 
@@ -195,13 +197,13 @@ Default duration bands, calibrated from the reference montage analysis:
 
 If `zoom_duration_type` is absent, the planner infers the band from the semantic clause length (`end_ms - start_ms`) and clamps it to the band.
 
-After the zoom episode ends, the planner normally emits an automatic return to the feasible CONTEXT crop:
+After the zoom episode ends, the planner normally emits an automatic return to **exact source framing (CONTEXT 1.00x)**:
 
 ```text
-CONTEXT
+CONTEXT 1.00x
   -> ARGUMENT / EMPHASIS
   -> hold for semantic clause
-  -> CONTEXT
+  -> CONTEXT 1.00x
 ```
 
 This prevents the close framing from sticking for 5–10 seconds simply because the next semantic event has not arrived yet.
@@ -234,7 +236,9 @@ Only three outputs:
 - `step`
 - `slow_push`
 
-Normal style is predominantly `hold/step`. `slow_push` is reserved for strong semantic emphasis where the crop delta is too small for a clean discrete step.
+**Default visual language remains `step/reframe`.** The reference montage analysis supports hard/reframe cuts as the normal accent language, so v1.7 Lite must not convert all semantic zooms into smooth pushes.
+
+`slow_push` stays a rare option for a strong semantic emphasis when the crop delta is too small for a clean discrete step. It is not the default transition style.
 
 No pattern engine. Ladder/Wave/Punch may later describe the resulting timeline, but do not generate it.
 
@@ -271,10 +275,11 @@ Check only:
 
 1. crops inside source bounds;
 2. no scale below 1.00;
-3. no crop above artistic/state cap;
-4. face/hair/captions remain safe;
-5. non-hold motion actually changes crop;
-6. ASR/text integrity through the existing skill flow.
+3. CONTEXT must remain at 1.00x by default;
+4. no accent crop above artistic/state cap;
+5. face/hair/captions remain safe;
+6. non-hold motion actually changes crop;
+7. ASR/text integrity through the existing skill flow.
 
 No critic registry, provenance framework, pattern lifecycle, director provider, retention gate, or complex report schema.
 
@@ -283,14 +288,16 @@ No critic registry, provenance framework, pattern lifecycle, director provider, 
 - WHY is independent from gaze;
 - importance controls emphasis level;
 - direction creates build / peak / release / neutral visual energy;
+- CONTEXT is exact source framing (1.00x);
 - EMPHASIS stays rare by default;
 - camera cadence is a soft prior, not a zoom generator;
 - zoom duration follows the semantic clause rather than a fixed metronome;
 - a finished zoom episode normally returns to CONTEXT;
 - adjacent build/peak beats can sustain tension without a base-frame flash;
-- geometry automatically collapses to 1–3 feasible states;
+- geometry automatically collapses infeasible accent states;
 - 4K cannot silently create aggressive framing;
 - blink/blur/pose/gesture safety is preserved;
 - renderer receives canonical crop coordinates and explicit return timing;
+- step/reframe remains the default; slow_push remains rare;
 - simple QC catches invalid/no-op/excessive zoom;
 - implementation remains small enough to understand directly.
