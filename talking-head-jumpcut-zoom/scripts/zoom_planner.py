@@ -8,18 +8,26 @@ from statistics import median
 from typing import Any
 
 STATE_TARGET = {"CONTEXT": 0.30, "ARGUMENT": 0.35, "EMPHASIS": 0.41}
-# Artistic caps are intentionally independent from source resolution. 4K may make a
-# crop cleaner, but it must not silently turn EMPHASIS into a 1.60x close-up.
 STATE_CAP = {"CONTEXT": 1.05, "ARGUMENT": 1.12, "EMPHASIS": 1.20}
 ABSOLUTE_ZOOM_CAP = 1.20
 STYLE_CAP = {"calm": 1.10, "moderate": 1.16, "dynamic": 1.20}
 MIN_STEP = {"calm": 0.04, "moderate": 0.06, "dynamic": 0.06}
 MIN_DWELL_MS = {"calm": 2000, "moderate": 1500, "dynamic": 1200}
-# Soft camera-rhythm prior, calibrated from the clean camera-layer analysis. It is
-# only a boundary bonus; semantic timing remains primary.
+
+# Rhythm is only a soft boundary preference. Meaning still decides whether a zoom exists.
 PREFERRED_CHANGE_MS = {"calm": 3000, "moderate": 2500, "dynamic": 2200}
 CADENCE_BONUS_MAX = 0.10
 CADENCE_TOLERANCE_MS = 900
+
+# Zooms are semantic episodes, not persistent states. The clause length chooses one
+# of these bands unless the semantic layer supplies `zoom_duration_type` explicitly.
+ZOOM_DURATION_BANDS_MS = {
+    "micro_punch": (800, 1400, 1100),
+    "beat": (1500, 2400, 2000),
+    "argument_hold": (2500, 3500, 3000),
+}
+CONTINUATION_GRACE_MS = 500
+
 STRONG_PEAK_MIN_DWELL_MS = 800
 STRONG_PEAK_IMPORTANCE = 0.92
 EMPHASIS_IMPORTANCE = 0.85
@@ -47,14 +55,7 @@ def _state_for_importance(value: float) -> str:
 
 
 def _directed_state(base_desired: str, current_state: str, raw_direction: Any) -> tuple[str, str]:
-    """Apply a tiny dramaturgy layer without introducing a pattern engine.
-
-    Importance/type answers how much emphasis the sentence deserves. Direction only
-    controls the energy trajectory: BUILD rises at most to ARGUMENT, PEAK may use the
-    normal semantic target, RELEASE returns home, and NEUTRAL explicitly holds the
-    current state. This creates visual tension/release without forcing a repeating
-    zoom pattern.
-    """
+    """Tiny dramaturgy layer: build / peak / release / neutral, no pattern engine."""
     if raw_direction is None or not str(raw_direction).strip():
         return base_desired, "auto"
 
@@ -69,13 +70,33 @@ def _directed_state(base_desired: str, current_state: str, raw_direction: Any) -
     if direction == "PEAK":
         return base_desired, "peak"
 
-    # BUILD never jumps directly to EMPHASIS and never downshifts an already-close
-    # framing. It advances only when semantic importance supports ARGUMENT or higher.
+    # BUILD rises at most to ARGUMENT and never downshifts an already-close framing.
     if STATE_LEVEL[current_state] >= STATE_LEVEL["ARGUMENT"]:
         return current_state, "build"
     if STATE_LEVEL[base_desired] >= STATE_LEVEL["ARGUMENT"]:
         return "ARGUMENT", "build"
     return current_state, "build"
+
+
+def _zoom_duration(event: dict[str, Any], start_ms: int) -> tuple[str, int]:
+    """Choose a semantic episode duration from the clause length or explicit type."""
+    explicit = str(event.get("zoom_duration_type") or "").strip().lower()
+    raw_ms = max(0, int(event.get("end_ms", start_ms)) - start_ms)
+
+    if explicit in ZOOM_DURATION_BANDS_MS:
+        kind = explicit
+    elif raw_ms and raw_ms < 1500:
+        kind = "micro_punch"
+    elif raw_ms and raw_ms < 2500:
+        kind = "beat"
+    elif raw_ms:
+        kind = "argument_hold"
+    else:
+        kind = "beat"
+
+    lo, hi, default = ZOOM_DURATION_BANDS_MS[kind]
+    duration = default if raw_ms <= 0 else int(_clamp(raw_ms, lo, hi))
+    return kind, duration
 
 
 def _samples(observations: list[dict[str, Any]], center_ms: int, window_ms: int) -> list[dict[str, Any]]:
@@ -93,20 +114,12 @@ def _crop_for_scale(rows: list[dict[str, Any]], width: int, height: int, scale: 
     crop_h = _even(height / scale)
     cx = median(float(o.get("face_cx", 0.5)) for o in rows)
     cy = median(float(o.get("face_cy", 0.34)) for o in rows)
-
     x = _even(_clamp(cx * width - crop_w / 2, 0, width - crop_w), 0)
-    # Keep the face center around 34% of output height, then clamp to source bounds.
     y = _even(_clamp(cy * height - 0.34 * crop_h, 0, height - crop_h), 0)
     return x, y, crop_w, crop_h
 
 
 def _face_box_px(row: dict[str, Any], width: int, height: int) -> tuple[float, float, float, float]:
-    """Return a conservative face box in source pixels.
-
-    `face_bbox`, when supplied, is normalized [left, top, right, bottom] and wins.
-    Otherwise derive a conservative box from face center + face-height ratio so the
-    Lite planner can still protect against subject travel without another detector.
-    """
     bbox = row.get("face_bbox")
     if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
         left, top, right, bottom = (float(v) for v in bbox)
@@ -182,14 +195,11 @@ def _candidate_states(
     for state in ("CONTEXT", "ARGUMENT", "EMPHASIS"):
         desired_scale = max(1.0, STATE_TARGET[state] / face_base)
         effective_cap = min(
-            float(quality_cap),
-            STYLE_CAP[intensity],
-            float(absolute_cap),
-            float(state_caps[state]),
+            float(quality_cap), STYLE_CAP[intensity], float(absolute_cap), float(state_caps[state])
         )
         scale = min(desired_scale, effective_cap)
         crop = _crop_for_scale(rows, width, height, scale)
-        safe, reasons = _crop_safe(rows, crop, width, height, scale)
+        safe, _ = _crop_safe(rows, crop, width, height, scale)
         if safe:
             candidates.append(
                 {
@@ -203,8 +213,6 @@ def _candidate_states(
                 }
             )
 
-    # Keep only perceptually distinct states. If ARGUMENT is redundant but EMPHASIS
-    # is distinguishable from CONTEXT, prefer the endpoint.
     distinct: list[dict[str, Any]] = []
     for candidate in candidates:
         if not distinct:
@@ -266,6 +274,7 @@ def _choose_boundary(
         safe, _ = _crop_safe(rows, crop, width, height, float(selected_state["scale"]))
         if not safe:
             continue
+
         proximity = max(0.0, 1.0 - abs(ms - event_ms) / 1500.0)
         score = proximity
         score += 0.25 if raw.get("word_boundary") else 0.0
@@ -291,6 +300,27 @@ def _choose_boundary(
     return chosen
 
 
+def _context_state(states: list[dict[str, Any]], width: int, height: int) -> dict[str, Any]:
+    for state in states:
+        if state["state"] == "CONTEXT":
+            return state
+    return {"state": "CONTEXT", "scale": 1.0, "crop": [0, 0, width, height]}
+
+
+def _return_event(pending: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "start_ms": int(pending["at_ms"]),
+        "end_ms": int(pending["at_ms"]),
+        "state": "CONTEXT",
+        "motion": "step",
+        "crop_start": list(pending["crop_start"]),
+        "crop_end": list(pending["crop_end"]),
+        "scale": float(pending["scale"]),
+        "why": "auto_return_context",
+        "parent_event_id": pending.get("parent_event_id"),
+    }
+
+
 def plan(payload: dict[str, Any]) -> dict[str, Any]:
     source = dict(payload.get("source") or {})
     width = int(source["width"])
@@ -308,6 +338,7 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
     min_dwell_ms = max(0, int(config.get("min_dwell_ms", MIN_DWELL_MS[intensity])))
     preferred_change_ms = max(0, int(config.get("preferred_change_ms", PREFERRED_CHANGE_MS[intensity])))
     peak_min_dwell_ms = max(0, int(config.get("peak_min_dwell_ms", STRONG_PEAK_MIN_DWELL_MS)))
+
     state_caps = dict(STATE_CAP)
     for state, value in dict(config.get("state_caps") or {}).items():
         state = str(state).upper()
@@ -320,10 +351,22 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
     current_state = "CONTEXT"
     current_crop = [0, 0, width, height]
     last_change_ms: int | None = None
+    pending_return: dict[str, Any] | None = None
     decisions: list[dict[str, Any]] = []
+    returns: list[dict[str, Any]] = []
 
-    for event in events:
+    for index, event in enumerate(events):
         event_ms = int(event["t_ms"])
+
+        # If the previous zoom episode already ended, materialize its return before
+        # interpreting this semantic beat. This prevents ARGUMENT from sticking forever.
+        if pending_return is not None and event_ms >= int(pending_return["at_ms"]):
+            returns.append(_return_event(pending_return))
+            current_state = "CONTEXT"
+            current_crop = list(pending_return["crop_end"])
+            last_change_ms = int(pending_return["at_ms"])
+            pending_return = None
+
         importance = float(event.get("importance", 0.0))
         base_desired = str(event.get("type") or _state_for_importance(importance)).upper()
         if base_desired not in STATE_LEVEL:
@@ -344,6 +387,7 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
         if selected is None:
             decisions.append(
                 {
+                    "event_id": event.get("id"),
                     "event_ms": event_ms,
                     "status": "KEEP",
                     "reason": "no_safe_state",
@@ -359,6 +403,7 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
         dwell_required_ms = min_dwell_ms
         if direction == "peak" and importance >= STRONG_PEAK_IMPORTANCE:
             dwell_required_ms = min(dwell_required_ms, peak_min_dwell_ms)
+
         earliest_change_ms = None
         if will_change and last_change_ms is not None:
             earliest_change_ms = last_change_ms + dwell_required_ms
@@ -378,6 +423,7 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
         if boundary is None:
             decisions.append(
                 {
+                    "event_id": event.get("id"),
                     "event_ms": event_ms,
                     "status": "KEEP",
                     "reason": "no_safe_boundary",
@@ -389,6 +435,7 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
             )
             continue
 
+        start_ms = int(boundary["ms"])
         scale_delta = abs(selected["scale"] / max(width / current_crop[2], 1e-9) - 1.0)
         if target_crop == current_crop:
             motion = "hold"
@@ -397,13 +444,53 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
         else:
             motion = "step"
 
-        start_ms = int(boundary["ms"])
-        end_ms = max(start_ms, int(event.get("end_ms", start_ms + 1500)))
+        duration_type = None
+        duration_ms = None
+        episode_end_ms = start_ms
+        auto_return = False
+        continued_by_next = False
+
+        context = _context_state(states, width, height)
+        if selected["state"] != "CONTEXT":
+            duration_type, duration_ms = _zoom_duration(event, start_ms)
+            episode_end_ms = start_ms + duration_ms
+
+            next_event = events[index + 1] if index + 1 < len(events) else None
+            if next_event is not None:
+                next_direction = str(next_event.get("direction") or "").strip().upper()
+                next_ms = int(next_event["t_ms"])
+                continued_by_next = (
+                    next_direction in {"BUILD", "PEAK"}
+                    and next_ms <= episode_end_ms + CONTINUATION_GRACE_MS
+                )
+
+            auto_return = not continued_by_next
+            if auto_return:
+                pending_return = {
+                    "at_ms": episode_end_ms,
+                    "crop_start": target_crop,
+                    "crop_end": list(context["crop"]),
+                    "scale": float(context["scale"]),
+                    "parent_event_id": event.get("id"),
+                }
+            else:
+                pending_return = None
+        else:
+            # A real semantic release/context decision supersedes any pending return.
+            pending_return = None
+
+        if motion == "slow_push" and duration_ms:
+            transition_end_ms = start_ms + min(900, max(400, duration_ms // 2))
+        else:
+            transition_end_ms = start_ms
+
         decisions.append(
             {
+                "event_id": event.get("id"),
                 "event_ms": event_ms,
                 "start_ms": start_ms,
-                "end_ms": end_ms,
+                "end_ms": episode_end_ms,
+                "transition_end_ms": transition_end_ms,
                 "status": "PLANNED",
                 "state": selected["state"],
                 "base_desired_state": base_desired,
@@ -419,12 +506,21 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
                 "boundary_score": boundary["score"],
                 "cadence_bonus": boundary.get("cadence_bonus", 0.0),
                 "dwell_required_ms": dwell_required_ms,
+                "zoom_duration_type": duration_type,
+                "zoom_duration_ms": duration_ms,
+                "episode_end_ms": episode_end_ms,
+                "auto_return": auto_return,
+                "continued_by_next": continued_by_next,
             }
         )
+
         current_state = selected["state"]
         if will_change:
             last_change_ms = start_ms
         current_crop = target_crop
+
+    if pending_return is not None:
+        returns.append(_return_event(pending_return))
 
     return {
         "version": "1.7-lite",
@@ -440,8 +536,10 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
             "peak_min_dwell_ms": peak_min_dwell_ms,
             "emphasis_importance": EMPHASIS_IMPORTANCE,
             "strong_peak_importance": STRONG_PEAK_IMPORTANCE,
+            "zoom_duration_bands_ms": ZOOM_DURATION_BANDS_MS,
         },
         "decisions": decisions,
+        "returns": returns,
     }
 
 
