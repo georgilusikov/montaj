@@ -42,6 +42,12 @@ PATTERN_WEIGHTS = {
     "history": 0.15,
 }
 
+STATE_LEVEL = {
+    ShotState.CONTEXT: 0,
+    ShotState.ARGUMENT: 1,
+    ShotState.EMPHASIS: 2,
+}
+
 
 def _unit(value: float) -> float:
     return max(0.0, min(1.0, float(value)))
@@ -95,3 +101,39 @@ def pattern_candidates(
 def select_pattern(**kwargs) -> dict[str, object] | None:
     candidates = pattern_candidates(**kwargs)
     return candidates[0] if candidates else None
+
+
+def shape_state_with_pattern(
+    pattern: dict[str, object] | None,
+    *,
+    semantic_desired_state: ShotState,
+    current_state: ShotState,
+) -> tuple[ShotState, bool]:
+    """Use pattern sequence as a semantic ceiling-preserving shaping prior.
+
+    WHY owns the maximum allowed semantic intensity. A pattern may stage a strong
+    EMPHASIS request through ARGUMENT first, or perform its declared reset, but it
+    can never elevate a CONTEXT/ARGUMENT WHY request into a stronger state.
+    """
+    if pattern is None or semantic_desired_state is ShotState.CONTEXT:
+        return semantic_desired_state, False
+
+    usable = tuple(pattern.get("usable_states") or ())
+    if not usable or current_state not in usable:
+        return semantic_desired_state, False
+
+    metadata = pattern.get("metadata")
+    index = usable.index(current_state)
+    if index + 1 < len(usable):
+        candidate = usable[index + 1]
+    elif isinstance(metadata, PatternSpec) and metadata.required_reset:
+        candidate = usable[0]
+    else:
+        candidate = usable[-1]
+
+    ceiling = STATE_LEVEL[semantic_desired_state]
+    if STATE_LEVEL[candidate] > ceiling:
+        allowed = [state for state in usable if STATE_LEVEL[state] <= ceiling]
+        candidate = max(allowed, key=lambda state: STATE_LEVEL[state]) if allowed else semantic_desired_state
+
+    return candidate, candidate is not semantic_desired_state
