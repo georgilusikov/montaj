@@ -81,6 +81,8 @@ class CompositionMetrics:
     face_ratio_p05: float
     face_ratio_p50: float
     face_ratio_p95: float
+    face_center_x_p50: float
+    face_center_y_p50: float
     max_safe_scale: float
     limiting_reasons: tuple[str, ...] = ()
 
@@ -102,6 +104,8 @@ class FeasibleShotState:
     state: ShotState
     scale: float
     face_ratio_p50: float
+    face_center_x_p50: float
+    face_center_y_p50: float
     composition_distance_from_previous: float | None
     limiting_reasons: tuple[str, ...] = ()
 
