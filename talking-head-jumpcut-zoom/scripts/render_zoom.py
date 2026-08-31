@@ -14,43 +14,57 @@ def _lerp(a: int, b: int, alpha: float) -> int:
     return value if value % 2 == 0 else value - 1
 
 
+def _timeline_items(plan: dict[str, Any]) -> list[dict[str, Any]]:
+    items = [dict(d) for d in plan.get("decisions", []) if d.get("status") == "PLANNED"]
+    items.extend(dict(r) for r in plan.get("returns", []))
+    items.sort(key=lambda item: (int(item.get("start_ms", 0)), 0 if item.get("why") != "auto_return_context" else 1))
+    return items
+
+
 def _commands(plan: dict[str, Any], hz: int = 10) -> str:
-    lines: list[str] = []
     target = "thz"
-    for decision in plan.get("decisions", []):
-        if decision.get("status") != "PLANNED":
-            continue
+    keyframes: list[tuple[int, list[int]]] = []
+
+    for decision in _timeline_items(plan):
         start_ms = int(decision["start_ms"])
-        end_ms = int(decision["end_ms"])
         start = [int(v) for v in decision["crop_start"]]
         end = [int(v) for v in decision["crop_end"]]
         motion = str(decision.get("motion", "step"))
 
         if motion == "hold":
             continue
-        if motion == "step" or end_ms <= start_ms:
-            keyframes = [(start_ms, end)]
-        else:
-            duration = max(1, end_ms - start_ms)
-            steps = max(2, int(round(duration / 1000 * hz)))
-            keyframes = []
-            for index in range(steps + 1):
-                alpha = index / steps
-                t_ms = start_ms + int(round(duration * alpha))
-                crop = [_lerp(a, b, alpha) for a, b in zip(start, end)]
-                keyframes.append((t_ms, crop))
+        if motion == "step":
+            keyframes.append((start_ms, end))
+            continue
 
-        for t_ms, crop in keyframes:
-            stamp = f"{t_ms / 1000.0:.6f}"
-            x, y, w, h = crop
-            lines.extend(
-                [
-                    f"{stamp} crop@{target} w {w};",
-                    f"{stamp} crop@{target} h {h};",
-                    f"{stamp} crop@{target} x {x};",
-                    f"{stamp} crop@{target} y {y};",
-                ]
-            )
+        transition_end_ms = int(decision.get("transition_end_ms", decision.get("end_ms", start_ms)))
+        if transition_end_ms <= start_ms:
+            keyframes.append((start_ms, end))
+            continue
+
+        duration = transition_end_ms - start_ms
+        steps = max(2, int(round(duration / 1000 * hz)))
+        for index in range(steps + 1):
+            alpha = index / steps
+            t_ms = start_ms + int(round(duration * alpha))
+            crop = [_lerp(a, b, alpha) for a, b in zip(start, end)]
+            keyframes.append((t_ms, crop))
+
+    # Returns and semantic transitions share one command stream. Sort globally so an
+    # automatic return can never be emitted after a later semantic command by accident.
+    keyframes.sort(key=lambda item: item[0])
+    lines: list[str] = []
+    for t_ms, crop in keyframes:
+        stamp = f"{t_ms / 1000.0:.6f}"
+        x, y, w, h = crop
+        lines.extend(
+            [
+                f"{stamp} crop@{target} w {w};",
+                f"{stamp} crop@{target} h {h};",
+                f"{stamp} crop@{target} x {x};",
+                f"{stamp} crop@{target} y {y};",
+            ]
+        )
     return "\n".join(lines) + ("\n" if lines else "")
 
 
@@ -58,9 +72,9 @@ def render(input_video: str, plan: dict[str, Any], output_video: str) -> None:
     width = int(plan["source"]["width"])
     height = int(plan["source"]["height"])
     initial = [0, 0, width, height]
-    planned = [d for d in plan.get("decisions", []) if d.get("status") == "PLANNED"]
-    if planned:
-        initial = [int(v) for v in planned[0].get("crop_start", initial)]
+    timeline = _timeline_items(plan)
+    if timeline:
+        initial = [int(v) for v in timeline[0].get("crop_start", initial)]
 
     commands = _commands(plan)
     with tempfile.TemporaryDirectory(prefix="montaj_v17_lite_") as tmp:
