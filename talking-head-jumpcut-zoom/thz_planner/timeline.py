@@ -36,7 +36,7 @@ def validate_content_edits(edits: Iterable[ContentEdit]) -> tuple[ContentEdit, .
     return ordered
 
 
-def _containing_content_edit(
+def _containing_source_edit(
     content: tuple[ContentEdit, ...],
     start_ms: int,
     end_ms: int,
@@ -47,7 +47,22 @@ def _containing_content_edit(
         if edit.src_start_ms <= start_ms <= end_ms <= edit.src_end_ms
     ]
     if len(matches) > 1:
-        raise ValueError("framing decision ambiguously maps to multiple content edits")
+        raise ValueError("framing decision ambiguously maps to multiple source edits")
+    return matches[0] if matches else None
+
+
+def _containing_output_edit(
+    content: tuple[ContentEdit, ...],
+    start_ms: int,
+    end_ms: int,
+) -> ContentEdit | None:
+    matches = [
+        edit
+        for edit in content
+        if edit.out_start_ms <= start_ms <= end_ms <= edit.out_end_ms
+    ]
+    if len(matches) > 1:
+        raise ValueError("framing decision ambiguously maps to multiple output edits")
     return matches[0] if matches else None
 
 
@@ -56,10 +71,12 @@ def framing_to_output(
     content: tuple[ContentEdit, ...],
 ) -> FramingDecision:
     if decision.time_basis == "output":
+        if _containing_output_edit(content, decision.start_ms, decision.end_ms) is None:
+            raise ValueError("output framing must fit entirely inside one kept content edit")
         return decision
     if decision.time_basis != "source":
         raise ValueError(f"unknown framing time_basis: {decision.time_basis}")
-    edit = _containing_content_edit(content, decision.start_ms, decision.end_ms)
+    edit = _containing_source_edit(content, decision.start_ms, decision.end_ms)
     if edit is None:
         raise ValueError("framing decision must fit entirely inside one kept content edit")
     out_start = edit.out_start_ms + (decision.start_ms - edit.src_start_ms)
