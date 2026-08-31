@@ -243,6 +243,7 @@ No critic registry, provenance framework, pattern lifecycle, director provider, 
 - face travel can degrade an unsafe close framing instead of clipping the subject;
 - blink/blur/long-eye-closure/strong-pose safety is preserved;
 - minimum dwell prevents nervous repeated reframes;
+- pause trimming remains a separate content-edit decision;
 - renderer accepts canonical crop coordinates;
 - simple QC catches invalid crops, no-op zooms, and excessive zoom strength;
 - implementation stays small enough to understand and modify directly.
