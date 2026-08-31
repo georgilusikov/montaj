@@ -31,8 +31,10 @@ Gaze/head pose may improve WHEN, but must not create WHY.
 
 - transcript semantic events (`importance`, optional `type`, optional `direction`)
 - face ratio / face center / hair top
+- optional normalized `face_bbox: [left, top, right, bottom]`
 - caption overlap / hard gesture or prop block
 - blink / blur flags
+- long-eye-closure / pose-unsafe / strong-head-turn flags when available
 - pause / word-boundary / head-return candidates
 - source dimensions and optional quality hints
 
@@ -102,10 +104,13 @@ For each candidate event, inspect a short time window around it. A state is safe
 - crop inside source bounds
 - hair/head inside frame
 - face below hard maximum size
+- face box inside the fixed crop with a small edge margin across the whole window
 - no caption overlap
 - no hard gesture/prop block
 
 The selected crop is one fixed crop for the event window; do not assume the renderer can re-center differently on every frame.
+
+If `face_bbox` is unavailable, the Lite planner derives a conservative approximate face box from `face_cx`, `face_cy`, and `face_ratio`. This is intentionally simple: it exists to stop a close crop when the subject travels too far inside the event window.
 
 ## WHY
 
@@ -149,6 +154,8 @@ Hard reject:
 - blink
 - blur
 - hard gesture/prop conflict
+- long eye closure
+- unsafe strong pose/head turn
 
 Soft bonuses:
 
@@ -157,7 +164,17 @@ Soft bonuses:
 - head return
 - proximity to semantic event
 
-If no safe boundary exists, keep the current framing.
+### Minimum dwell
+
+To avoid nervous zoom flicker, a real framing change must normally respect a minimum dwell since the previous change:
+
+- calm: **2000 ms**
+- moderate: **1500 ms**
+- dynamic: **1200 ms**
+
+A very strong explicit `peak` (`importance >= 0.90`) may use a shorter provisional minimum of **800 ms**. Holds do not reset the dwell timer.
+
+If no safe boundary survives safety + dwell, keep the current framing.
 
 ## Motion
 
@@ -192,6 +209,16 @@ Renderer must execute these crops; it must not re-solve composition.
 
 Content-removing jumpcuts remain separate from framing decisions.
 
+## Pause removal remains a separate content-edit layer
+
+The zoom planner does **not** decide which speech pauses to delete. The existing talking-head skill keeps that responsibility before framing:
+
+- dense speech / short pauses -> preserve continuity;
+- removable silence -> trim according to the speech-cleanup policy and preserve words;
+- remaining pauses may still receive a positive WHEN bonus for a framing transition.
+
+This separation is intentional: removing footage and changing crop are different editing decisions.
+
 ## QC Lite
 
 After render/plan check only:
@@ -213,7 +240,9 @@ No critic registry, provenance framework, pattern lifecycle, director provider, 
 - importance controls emphasis level while direction can express build / peak / release / neutral;
 - direction does not introduce a hard repeating zoom pattern;
 - 4K quality cannot silently create an aggressive zoom;
-- blink/blur/gesture safety is preserved;
+- face travel can degrade an unsafe close framing instead of clipping the subject;
+- blink/blur/long-eye-closure/strong-pose safety is preserved;
+- minimum dwell prevents nervous repeated reframes;
 - renderer accepts canonical crop coordinates;
 - simple QC catches invalid crops, no-op zooms, and excessive zoom strength;
 - implementation stays small enough to understand and modify directly.
