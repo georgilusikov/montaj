@@ -20,14 +20,20 @@ class ContentEdit:
 
 def validate_content_edits(edits: Iterable[ContentEdit]) -> tuple[ContentEdit, ...]:
     ordered = tuple(sorted(edits, key=lambda x: (x.out_start_ms, x.segment_id)))
-    previous_out_end = -1
-    for edit in ordered:
+    previous_out_end: int | None = None
+    seen_ids: set[str] = set()
+    for index, edit in enumerate(ordered):
+        if not edit.segment_id or edit.segment_id in seen_ids:
+            raise ValueError("content edit segment ids must be non-empty and unique")
+        seen_ids.add(edit.segment_id)
         if edit.src_start_ms < 0 or edit.out_start_ms < 0:
             raise ValueError("content edit timestamps must be non-negative")
-        if edit.src_end_ms < edit.src_start_ms or edit.out_end_ms < edit.out_start_ms:
-            raise ValueError("content edit end must be >= start")
-        if edit.out_start_ms < previous_out_end:
-            raise ValueError("content edits overlap on output timeline")
+        if edit.src_end_ms <= edit.src_start_ms or edit.out_end_ms <= edit.out_start_ms:
+            raise ValueError("content edit duration must be positive")
+        if index == 0 and edit.out_start_ms != 0:
+            raise ValueError("output content timeline must start at 0")
+        if previous_out_end is not None and edit.out_start_ms != previous_out_end:
+            raise ValueError("output content edits must be contiguous")
         src_dur = edit.src_end_ms - edit.src_start_ms
         out_dur = edit.out_end_ms - edit.out_start_ms
         if src_dur != out_dur:
