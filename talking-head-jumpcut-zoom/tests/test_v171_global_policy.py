@@ -3,6 +3,7 @@ import unittest
 from thz_planner.global_policy import (
     home_return_report,
     outro_breath_policy,
+    pattern_reset_report,
     state_balance_report,
 )
 from thz_planner.schema import (
@@ -14,7 +15,7 @@ from thz_planner.schema import (
 )
 
 
-def framing(segment_id, start, end, state, *, coverage=False):
+def framing(segment_id, start, end, state, *, coverage=False, desired=None):
     crop = CanonicalCrop(0, 0, 1080, 1920)
     return FramingDecision(
         segment_id=segment_id,
@@ -27,6 +28,7 @@ def framing(segment_id, start, end, state, *, coverage=False):
         crop_end=crop,
         anchor_policy="test",
         time_basis="output",
+        desired=desired or {},
         derived={"motion_duration_ms": 0, "coverage_generated": coverage},
     )
 
@@ -45,6 +47,61 @@ class GlobalPolicyTests(unittest.TestCase):
             framing("b", 8000, 15000, ShotState.ARGUMENT),
         ]
         self.assertFalse(home_return_report(rows))
+
+    def test_pattern_expiry_requires_declared_terminal_state(self):
+        broken = framing(
+            "expired",
+            0,
+            1000,
+            ShotState.EMPHASIS,
+            desired={
+                "pattern_id": "ladder",
+                "pattern_elapsed_ms": 12001,
+                "pattern_max_duration_ms": 12000,
+                "pattern_expired": True,
+                "pattern_required_reset": True,
+                "pattern_allowed_terminal_states": (ShotState.CONTEXT, ShotState.ARGUMENT),
+            },
+        )
+        violations = pattern_reset_report([broken])
+        self.assertEqual(len(violations), 1)
+        self.assertEqual(violations[0].reason, "pattern_reset_terminal_not_allowed")
+
+    def test_pattern_over_max_without_expiry_marker_is_invalid(self):
+        broken = framing(
+            "stale",
+            0,
+            1000,
+            ShotState.ARGUMENT,
+            desired={
+                "pattern_id": "ladder",
+                "pattern_elapsed_ms": 12001,
+                "pattern_max_duration_ms": 12000,
+                "pattern_expired": False,
+                "pattern_required_reset": True,
+                "pattern_allowed_terminal_states": (ShotState.CONTEXT, ShotState.ARGUMENT),
+            },
+        )
+        violations = pattern_reset_report([broken])
+        self.assertEqual(len(violations), 1)
+        self.assertEqual(violations[0].reason, "pattern_max_duration_unhandled")
+
+    def test_valid_expired_pattern_reset_passes(self):
+        reset = framing(
+            "reset",
+            0,
+            1000,
+            ShotState.CONTEXT,
+            desired={
+                "pattern_id": "ladder",
+                "pattern_elapsed_ms": 12001,
+                "pattern_max_duration_ms": 12000,
+                "pattern_expired": True,
+                "pattern_required_reset": True,
+                "pattern_allowed_terminal_states": (ShotState.CONTEXT, ShotState.ARGUMENT),
+            },
+        )
+        self.assertFalse(pattern_reset_report([reset]))
 
     def test_state_balance_is_information_not_verdict(self):
         report = state_balance_report(
