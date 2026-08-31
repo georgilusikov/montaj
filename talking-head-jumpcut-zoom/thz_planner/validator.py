@@ -4,7 +4,7 @@ from typing import Any
 
 from .coverage import output_coverage_gaps
 from .framing import derived_scale
-from .global_policy import home_return_report, state_balance_report
+from .global_policy import home_return_report, pattern_reset_report, state_balance_report
 from .schema import FramingDecision, QualityMetrics, RenderPrimitive
 from .timeline import ContentEdit, validate_content_edits
 
@@ -59,6 +59,14 @@ def validate_manifest_pre_render(
         )
         raise ValueError(f"renderer framing coverage gaps: {compact}")
 
+    pattern_violations = pattern_reset_report(framing)
+    if pattern_violations:
+        first = pattern_violations[0]
+        raise ValueError(
+            "pattern reset contract violated: "
+            f"{first.segment_id}:{first.pattern_id}:{first.reason}"
+        )
+
     home_violations = home_return_report(framing)
     if home_violations:
         first = home_violations[0]
@@ -74,6 +82,7 @@ def validate_manifest_pre_render(
         "framing_decision_count": len(framing),
         "coverage_gap_count": len(gaps),
         "framing_coverage": 1.0 if not gaps else 0.0,
+        "pattern_reset_violation_count": len(pattern_violations),
         "home_return_violation_count": len(home_violations),
         "state_balance": balance,
     }
