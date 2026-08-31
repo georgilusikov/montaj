@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import json
 import re
+from typing import Iterable
 
 from .contract import RenderSegmentPlan
 
@@ -89,6 +92,26 @@ def compile_ffmpeg_segment(
         sendcmd_text="\n".join(commands) + "\n",
         command_file_token=token,
     )
+
+
+def ffmpeg_program_sha256(programs: Iterable[FFmpegSegmentProgram]) -> str:
+    """Hash exact renderer instructions without binding ephemeral temp paths."""
+    rows = [
+        {
+            "segment_id": program.segment_id,
+            "filtergraph_template": program.filtergraph_template,
+            "sendcmd_text": program.sendcmd_text,
+            "command_file_token": program.command_file_token,
+        }
+        for program in programs
+    ]
+    payload = json.dumps(
+        rows,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def bind_sendcmd_file(program: FFmpegSegmentProgram, path: str) -> str:
