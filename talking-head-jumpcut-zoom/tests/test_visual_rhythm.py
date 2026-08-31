@@ -24,8 +24,8 @@ def observations(duration_ms=12000, face_ratio=0.20):
     ]
 
 
-def event(event_id, t_ms, end_ms, *, direction="build", importance=0.70):
-    return {
+def event(event_id, t_ms, end_ms, *, direction="build", importance=0.70, motion_hint=None):
+    row = {
         "id": event_id,
         "t_ms": t_ms,
         "end_ms": end_ms,
@@ -33,20 +33,34 @@ def event(event_id, t_ms, end_ms, *, direction="build", importance=0.70):
         "direction": direction,
         "boundary_candidates": [{"id": f"b-{event_id}", "ms": t_ms, "word_boundary": True}],
     }
+    if motion_hint:
+        row["motion_hint"] = motion_hint
+    return row
 
 
-def payload(events, duration_ms=12000):
+def payload(events, duration_ms=12000, cuts=None):
     return {
         "source": {"width": 2160, "height": 3840, "quality_cap": 1.60, "duration_ms": duration_ms},
         "config": {"intensity": "moderate", "window_ms": 600},
         "observations": observations(duration_ms),
         "semantic_events": events,
+        "content_cuts_ms": cuts or [],
     }
 
 
 class VisualRhythmTests(unittest.TestCase):
-    def test_build_uses_slow_soft_105_push(self):
+    def test_normal_build_is_not_automatically_slow(self):
         result = plan(payload([event("build", 1000, 4000, direction="build", importance=0.80)], duration_ms=5000))
+        decision = result["decisions"][0]
+        self.assertEqual(decision["state"], "ARGUMENT")
+        self.assertFalse(decision["soft_build"])
+        self.assertEqual(decision["motion"], "step")
+        self.assertAlmostEqual(decision["scale"], 1.12, places=2)
+
+    def test_explicit_gradual_build_uses_soft_slow_push(self):
+        result = plan(payload([
+            event("build", 1000, 4000, direction="build", importance=0.80, motion_hint="slow_push")
+        ], duration_ms=5000))
         decision = result["decisions"][0]
         self.assertEqual(decision["state"], "ARGUMENT")
         self.assertTrue(decision["soft_build"])
@@ -61,33 +75,28 @@ class VisualRhythmTests(unittest.TestCase):
         self.assertFalse(decision["soft_build"])
         self.assertEqual(decision["motion"], "step")
         self.assertGreaterEqual(decision["scale"], 1.12)
-        self.assertEqual(decision["transition_end_ms"], decision["start_ms"])
 
-    def test_long_neutral_gap_gets_closed_nonsemantic_refresh_cycle(self):
+    def test_long_neutral_gap_requests_jumpcut_instead_of_camera_drift(self):
         result = plan(payload([], duration_ms=12000))
-        self.assertGreaterEqual(len(result["refreshes"]), 2)
-        push, pull = result["refreshes"][:2]
-        self.assertEqual(push["ambient_phase"], "push")
-        self.assertEqual(pull["ambient_phase"], "pull")
-        self.assertFalse(push["semantic_trigger"])
-        self.assertFalse(pull["semantic_trigger"])
-        self.assertEqual(push["motion"], "slow_push")
-        self.assertEqual(pull["motion"], "slow_push")
-        self.assertLessEqual(push["scale"], 1.04)
-        self.assertEqual(pull["crop_end"], [0, 0, 2160, 3840])
-        self.assertLessEqual(push["start_ms"], 5000)
+        self.assertNotIn("refreshes", result)
+        self.assertGreaterEqual(len(result["cadence_requests"]), 2)
+        first = result["cadence_requests"][0]
+        self.assertEqual(first["preferred_action"], "jumpcut_same_scale")
+        self.assertFalse(first["semantic_trigger"])
+        self.assertLessEqual(first["at_ms"], 5000)
         self.assertEqual(check(result)["status"], "PASS")
 
-    def test_short_neutral_gap_does_not_manufacture_refresh(self):
-        result = plan(payload([], duration_ms=4500))
-        self.assertEqual(result["refreshes"], [])
+    def test_existing_content_cuts_satisfy_visual_cadence(self):
+        result = plan(payload([], duration_ms=12000, cuts=[3500, 7000, 10500]))
+        self.assertEqual(result["cadence_requests"], [])
 
-    def test_renderer_contains_ambient_interpolation_commands(self):
-        result = plan(payload([], duration_ms=12000))
+    def test_slow_push_renderer_uses_dense_interpolation(self):
+        result = plan(payload([
+            event("build", 1000, 4000, direction="build", importance=0.80, motion_hint="slow_push")
+        ], duration_ms=5000))
         commands = _commands(result)
-        first = result["refreshes"][0]
-        self.assertIn(f"{first['start_ms'] / 1000.0:.6f} crop@thz", commands)
-        self.assertIn(f"{first['transition_end_ms'] / 1000.0:.6f} crop@thz", commands)
+        # 2.4 s at 60 Hz yields far more than the old 10 Hz stair-step command stream.
+        self.assertGreater(commands.count("crop@thz w"), 100)
 
 
 if __name__ == "__main__":
