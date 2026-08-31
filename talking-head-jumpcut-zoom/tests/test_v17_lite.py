@@ -98,6 +98,44 @@ class LitePlannerTests(unittest.TestCase):
         self.assertEqual(decision["desired_state"], "ARGUMENT")
         self.assertLessEqual(decision["scale"], 1.12)
 
+    def test_build_peak_release_shapes_energy_without_pattern_loop(self):
+        data = {
+            "source": {"width": 2160, "height": 3840, "quality_cap": 1.60},
+            "config": {"intensity": "dynamic", "window_ms": 800},
+            "observations": observations(0.20),
+            "semantic_events": [
+                {
+                    "id": "build",
+                    "t_ms": 800,
+                    "end_ms": 1300,
+                    "importance": 1.0,
+                    "direction": "build",
+                    "boundary_candidates": [{"id": "b1", "ms": 800, "word_boundary": True}],
+                },
+                {
+                    "id": "peak",
+                    "t_ms": 1800,
+                    "end_ms": 2300,
+                    "importance": 1.0,
+                    "direction": "peak",
+                    "boundary_candidates": [{"id": "b2", "ms": 1800, "word_boundary": True}],
+                },
+                {
+                    "id": "release",
+                    "t_ms": 2800,
+                    "end_ms": 3300,
+                    "importance": 1.0,
+                    "direction": "release",
+                    "boundary_candidates": [{"id": "b3", "ms": 2800, "word_boundary": True}],
+                },
+            ],
+        }
+        result = plan(data)
+        decisions = result["decisions"]
+        self.assertEqual([d["direction"] for d in decisions], ["build", "peak", "release"])
+        self.assertEqual([d["desired_state"] for d in decisions], ["ARGUMENT", "EMPHASIS", "CONTEXT"])
+        self.assertEqual([d["state"] for d in decisions], ["ARGUMENT", "EMPHASIS", "CONTEXT"])
+
     def test_qc_rejects_non_hold_noop(self):
         bad = {
             "source": {"width": 1080, "height": 1920},
