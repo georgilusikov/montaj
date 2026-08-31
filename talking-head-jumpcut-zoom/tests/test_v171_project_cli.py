@@ -76,9 +76,16 @@ class ProjectPlannerTests(unittest.TestCase):
         b = plan_project(payload())
         self.assertEqual(canonical_json(a), canonical_json(b))
         self.assertEqual(a["validation"]["status"], "PASS")
+        self.assertEqual(a["validation"]["coverage_gap_count"], 0)
+        self.assertEqual(a["validation"]["framing_coverage"], 1.0)
         self.assertEqual(a["decision_summary"][0]["status"], "PLANNED")
-        framing = a["manifest"]["framing_decisions"][0]
-        self.assertEqual(framing.time_basis, "output")
+        framing = a["manifest"]["framing_decisions"]
+        self.assertTrue(all(item.time_basis == "output" for item in framing))
+        semantic = [item for item in framing if not item.derived.get("coverage_generated")]
+        coverage = [item for item in framing if item.derived.get("coverage_generated")]
+        self.assertEqual(len(semantic), 1)
+        self.assertEqual(len(coverage), 2)
+        self.assertEqual(a["manifest"]["provenance"]["framing_coverage_policy"], "explicit_source_base_v1")
 
     def test_cli_writes_canonical_json(self):
         with tempfile.TemporaryDirectory() as tmp:
