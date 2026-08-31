@@ -19,7 +19,7 @@ def observations(face_ratio=0.30):
             "hair_top": 0.12,
             "caption_overlap": 0.0,
         }
-        for t in range(0, 5000, 250)
+        for t in range(0, 6000, 250)
     ]
 
 
@@ -54,6 +54,12 @@ class LitePlannerTests(unittest.TestCase):
         decision = result["decisions"][0]
         self.assertEqual(decision["desired_state"], "CONTEXT")
         self.assertEqual(decision["state"], "CONTEXT")
+
+    def test_emphasis_is_reserved_for_rare_high_importance_events(self):
+        argument = plan(payload(importance=0.80))["decisions"][0]
+        emphasis = plan(payload(importance=0.90))["decisions"][0]
+        self.assertEqual(argument["desired_state"], "ARGUMENT")
+        self.assertEqual(emphasis["desired_state"], "EMPHASIS")
 
     def test_tight_source_collapses_fake_states(self):
         result = plan(payload(importance=1.0, face_ratio=0.39))
@@ -161,6 +167,39 @@ class LitePlannerTests(unittest.TestCase):
         self.assertEqual([d["direction"] for d in decisions], ["build", "peak", "release"])
         self.assertEqual([d["desired_state"] for d in decisions], ["ARGUMENT", "EMPHASIS", "CONTEXT"])
         self.assertEqual([d["state"] for d in decisions], ["ARGUMENT", "EMPHASIS", "CONTEXT"])
+
+    def test_camera_cadence_is_only_a_soft_boundary_bonus(self):
+        data = {
+            "source": {"width": 2160, "height": 3840, "quality_cap": 1.60},
+            "config": {"intensity": "moderate", "window_ms": 600},
+            "observations": observations(0.20),
+            "semantic_events": [
+                {
+                    "id": "first",
+                    "t_ms": 500,
+                    "end_ms": 900,
+                    "importance": 0.70,
+                    "direction": "build",
+                    "boundary_candidates": [{"id": "b1", "ms": 500, "word_boundary": True}],
+                },
+                {
+                    "id": "release",
+                    "t_ms": 3000,
+                    "end_ms": 3400,
+                    "importance": 0.20,
+                    "direction": "release",
+                    "boundary_candidates": [
+                        {"id": "near", "ms": 3000, "word_boundary": True},
+                        {"id": "cadence", "ms": 3050, "word_boundary": True},
+                    ],
+                },
+            ],
+        }
+        result = plan(data)
+        second = result["decisions"][1]
+        self.assertEqual(second["state"], "CONTEXT")
+        self.assertGreaterEqual(second["cadence_bonus"], 0.0)
+        self.assertEqual(result["config"]["preferred_change_ms"], 2500)
 
     def test_min_dwell_blocks_nervous_release_but_strong_peak_can_arrive_sooner(self):
         data = {
