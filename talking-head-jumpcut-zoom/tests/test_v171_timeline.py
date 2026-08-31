@@ -29,6 +29,21 @@ class TimelineContractTests(unittest.TestCase):
             derived={"motion_duration_ms": 0},
         )
 
+    def _full_framing(self):
+        crop = CanonicalCrop(0, 0, 1080, 1920)
+        return FramingDecision(
+            segment_id="frame_full",
+            start_ms=1000,
+            end_ms=2000,
+            state=ShotState.CONTEXT,
+            motion_intent=MotionIntent.STATIC,
+            primitive=RenderPrimitive.HOLD,
+            crop_start=crop,
+            crop_end=crop,
+            anchor_policy="source_base_explicit_coverage",
+            derived={"motion_duration_ms": 0, "coverage_generated": True},
+        )
+
     def test_source_framing_maps_to_output_time(self):
         manifest = build_timeline_manifest(
             analysis_hash="a",
@@ -60,7 +75,7 @@ class TimelineContractTests(unittest.TestCase):
             analysis_hash="a",
             config_hash="c",
             content_edits=[ContentEdit("content_01", 1000, 2000, 0, 1000)],
-            framing_decisions=[self._framing()],
+            framing_decisions=[self._full_framing()],
             source_type="live",
         )
         a = build_timeline_manifest(**kwargs)
@@ -68,6 +83,24 @@ class TimelineContractTests(unittest.TestCase):
         self.assertEqual(canonical_json(a), canonical_json(b))
         summary = validate_manifest_pre_render(a, quality=QualityMetrics(1080, 1920))
         self.assertEqual(summary["status"], "PASS")
+        self.assertEqual(summary["coverage_gap_count"], 0)
+
+    def test_sparse_manifest_can_be_inspected_but_not_render_validated(self):
+        manifest = build_timeline_manifest(
+            analysis_hash="a",
+            config_hash="c",
+            content_edits=[ContentEdit("content_01", 1000, 2000, 0, 1000)],
+            framing_decisions=[self._framing()],
+            source_type="live",
+        )
+        with self.assertRaisesRegex(ValueError, "coverage gaps"):
+            validate_manifest_pre_render(manifest, quality=QualityMetrics(1080, 1920))
+        summary = validate_manifest_pre_render(
+            manifest,
+            quality=QualityMetrics(1080, 1920),
+            require_full_coverage=False,
+        )
+        self.assertGreater(summary["coverage_gap_count"], 0)
 
     def test_non_1_to_1_content_mapping_is_rejected(self):
         with self.assertRaises(ValueError):
