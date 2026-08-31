@@ -1,6 +1,6 @@
 # Talking-Head Jumpcut & Zoom Editor v1.7 Lite
 
-**Goal:** keep the useful architectural fix from v1.7.1 without turning the skill into a framework.
+**Goal:** keep the useful semantic/geometry fix without turning the skill into a framework.
 
 ## Pipeline
 
@@ -18,25 +18,24 @@ SKILL.md
 
 Every framing change answers four questions:
 
-1. **WHY** — is this moment semantically important enough to change framing, and is the energy building, peaking, releasing, or staying neutral?
+1. **WHY** — is this moment semantically important, and is the energy building, peaking, releasing, or neutral?
 2. **CAN** — which of CONTEXT / ARGUMENT / EMPHASIS are physically safe here?
-3. **WHEN** — which nearby boundary is safe for the transition?
+3. **WHEN** — which nearby boundary is safe and rhythmically natural?
 4. **HOW** — hold, step/reframe, or slow_push?
 
 Gaze/head pose may improve WHEN, but must not create WHY.
 
 ## Inputs
 
-`analysis.json` may contain only observations/evidence:
+`analysis.json` contains observations/evidence only:
 
-- transcript semantic events (`importance`, optional `type`, optional `direction`)
-- face ratio / face center / hair top
-- optional normalized `face_bbox: [left, top, right, bottom]`
-- caption overlap / hard gesture or prop block
-- blink / blur flags
-- long-eye-closure / pose-unsafe / strong-head-turn flags when available
-- pause / word-boundary / head-return candidates
-- source dimensions and optional quality hints
+- semantic events: `importance`, optional `type`, optional `direction`;
+- face ratio / face center / hair top;
+- optional normalized `face_bbox`;
+- caption overlap / gesture or prop hard block;
+- blink / blur / long eye closure / unsafe pose flags;
+- pause / word-boundary / head-return boundary candidates;
+- source dimensions and optional quality hints.
 
 ## Shot states
 
@@ -46,17 +45,13 @@ Use semantic states, not fixed plan numbers:
 - `ARGUMENT`
 - `EMPHASIS`
 
-Default desired face-ratio targets are provisional:
+Default desired face-ratio targets remain provisional:
 
 - CONTEXT: 0.30
 - ARGUMENT: 0.35
 - EMPHASIS: 0.41
 
-The targets describe the desired composition. They do **not** authorize arbitrary zoom strength.
-
-### Artistic zoom caps
-
-Default state caps:
+Default artistic caps:
 
 - CONTEXT: **1.05x**
 - ARGUMENT: **1.12x**
@@ -64,117 +59,134 @@ Default state caps:
 
 Global absolute cap: **1.20x**.
 
-The intensity cap also applies:
+Intensity caps:
 
 - calm: 1.10x
 - moderate: 1.16x
 - dynamic: 1.20x
 
-Therefore, for the normal `moderate` talking-head profile, even EMPHASIS is capped at **1.16x**.
+For normal `moderate`, even EMPHASIS is therefore capped at **1.16x**.
 
 ### 4K rule
 
-`quality_cap` is a **technical image-quality limit only**. It never raises the artistic cap.
-
-Example:
+`quality_cap` is technical only. It never raises the artistic cap.
 
 ```text
-4K source quality_cap = 1.60
+4K quality_cap = 1.60
 moderate EMPHASIS
-=> effective cap = min(1.60 quality, 1.16 style, 1.20 state, 1.20 absolute)
+=> min(1.60 quality, 1.16 style, 1.20 state, 1.20 absolute)
 => 1.16x maximum
 ```
 
-A plan that uses 1.33x ARGUMENT or 1.60x EMPHASIS is **not v1.7 Lite compliant**, even when the source is 4K. `simple_qc.py` must reject it.
-
-The planner computes scale from the actual face ratio and clamps it by:
-
-- state cap
-- style/intensity cap
-- absolute zoom cap
-- quality cap
-- geometry safety
-
-If three distinct states do not fit, use two. If two do not fit, use one. Never invent a fake third plan. `scale < 1.00` is forbidden.
+The planner computes scale from actual face size. If three distinct safe states do not fit, use two; if two do not fit, use one. Never invent a fake third state. `scale < 1.00` is forbidden.
 
 ## Geometry safety
 
-For each candidate event, inspect a short time window around it. A state is safe only if all sampled frames keep:
+For each semantic event inspect a short temporal window. A candidate state is safe only if sampled frames keep:
 
-- crop inside source bounds
-- hair/head inside frame
-- face below hard maximum size
-- face box inside the fixed crop with a small edge margin across the whole window
-- no caption overlap
-- no hard gesture/prop block
+- crop inside source bounds;
+- hair/head inside frame;
+- face below hard maximum size;
+- face box inside one fixed crop across the whole event window;
+- no caption overlap;
+- no hard gesture/prop block.
 
-The selected crop is one fixed crop for the event window; do not assume the renderer can re-center differently on every frame.
+Renderer receives the final pixel crop. It must not re-solve composition.
 
-If `face_bbox` is unavailable, the Lite planner derives a conservative approximate face box from `face_cx`, `face_cy`, and `face_ratio`. This is intentionally simple: it exists to stop a close crop when the subject travels too far inside the event window.
+## WHY: semantic energy
 
-## WHY
+### Importance
 
-Each semantic event contains `importance` in `[0,1]` and may also contain semantic `type` and `direction`.
+Importance answers **how strong the visual emphasis deserves to be**.
 
-### Importance = how much emphasis the sentence deserves
+Calibrated default mapping:
 
-Simple default mapping:
+- `< 0.40` -> CONTEXT
+- `0.40 .. 0.84` -> ARGUMENT
+- `>= 0.85` -> EMPHASIS
 
-- `<0.40` -> CONTEXT
-- `0.40..0.74` -> ARGUMENT
-- `>=0.75` -> EMPHASIS
+EMPHASIS is intentionally rare. Normal semantic accents should usually remain ARGUMENT.
 
-### Direction = where the visual energy should move
+Semantic types that often deserve higher importance include:
+
+- contrast / antithesis: `X, but Y`, `not X — Y`;
+- change of subject or point of view;
+- important number / rule / list conclusion;
+- warning;
+- punchline;
+- quote / axiom / final conclusion.
+
+These are semantic hints for the LLM/analysis layer, **not Python keyword triggers**.
+
+### Direction
 
 Optional values:
 
-- `build` — build tension, but never jump directly to EMPHASIS; at most move toward ARGUMENT.
-- `peak` — use the normal importance/type target; a strong event may reach EMPHASIS.
-- `release` — return toward CONTEXT even if the sentence itself is important.
-- `neutral` — explicitly preserve the current framing unless geometry forces degradation.
+- `build` — increase visual tension, at most toward ARGUMENT;
+- `peak` — allow the semantic target; a strong event may reach EMPHASIS;
+- `release` — return toward CONTEXT and restore visual breathing room;
+- `neutral` — preserve current framing unless geometry forces degradation.
 
-If `direction` is absent or unknown, the planner keeps the previous v1.7 Lite behavior and uses importance/type directly.
-
-This gives dramaturgy without a pattern engine. Example:
+This is the minimal dramaturgy model:
 
 ```text
-build   -> ARGUMENT
-peak    -> EMPHASIS
-release -> CONTEXT
+build   -> visually closer / more focused
+peak    -> strongest justified framing
+release -> wider / calmer framing
+neutral -> hold
 ```
 
-But this is **not** a mandatory repeating sequence. Events can be `peak -> release -> build`, several neutral events can hold the same state, and missing intermediate states simply collapse according to geometry. Patterns such as Ladder/Wave remain descriptions of the resulting timeline, not planning rules.
+It is **not** a mandatory repeating sequence. The semantics may produce `peak -> release -> neutral`, several builds, or a long neutral section.
 
-## WHEN
+The goal is controlled visual tension and relief, not a mechanical zoom pattern.
 
-Choose the best nearby safe candidate boundary.
+## WHEN: safety first, rhythm second
 
 Hard reject:
 
-- blink
-- blur
-- hard gesture/prop conflict
-- long eye closure
-- unsafe strong pose/head turn
+- blink;
+- blur;
+- hard gesture/prop conflict;
+- long eye closure;
+- unsafe strong pose/head turn.
 
 Soft bonuses:
 
-- word boundary
-- pause
-- head return
-- proximity to semantic event
+- semantic proximity;
+- word boundary;
+- pause;
+- head return;
+- preferred camera rhythm.
 
 ### Minimum dwell
 
-To avoid nervous zoom flicker, a real framing change must normally respect a minimum dwell since the previous change:
+To avoid nervous flicker:
 
 - calm: **2000 ms**
 - moderate: **1500 ms**
 - dynamic: **1200 ms**
 
-A very strong explicit `peak` (`importance >= 0.90`) may use a shorter provisional minimum of **800 ms**. Holds do not reset the dwell timer.
+A very strong explicit peak (`importance >= 0.92`) may use the provisional **800 ms** minimum.
 
-If no safe boundary survives safety + dwell, keep the current framing.
+### Preferred camera cadence
+
+The clean camera-layer analysis suggests a normal talking-head camera/framing change roughly every **2.4–2.7 s**.
+
+v1.7 Lite therefore uses only a **soft timing bonus**, not a hard cadence:
+
+- calm target: ~3.0 s
+- moderate target: ~2.5 s
+- dynamic target: ~2.2 s
+
+Meaning always wins over the timer. If the best semantic boundary occurs at 1.9 s or 3.2 s, the planner may use it.
+
+### Captions are a separate rhythm layer
+
+Kinetic subtitle/text changes may happen faster (roughly ~1.5–1.8 s in the reference analysis), but this cadence must **not** drive the camera zoom planner.
+
+```text
+camera/framing rhythm != caption rhythm
+```
 
 ## Motion
 
@@ -184,13 +196,19 @@ Only three outputs:
 - `step`
 - `slow_push`
 
-Use `slow_push` for strong semantic emphasis when the scale difference is too small for a clean perceptual step. Otherwise use `step` for a meaningful discrete change.
+Normal style is predominantly `hold/step`. `slow_push` is reserved for strong semantic emphasis where the crop delta is too small for a clean discrete step.
 
-No pattern engine in v1.7 Lite. Ladder/Wave/Punch may be used later as descriptions of resulting timelines, not as planning constraints.
+No pattern engine. Ladder/Wave/Punch may later describe the resulting timeline, but do not generate it.
+
+## Content cuts stay separate
+
+Removing speech pauses and changing framing are separate decisions.
+
+The zoom planner does not decide which spoken pauses to remove. Existing speech-cleanup logic remains responsible for word integrity and pause trimming. Remaining safe pauses can still receive a WHEN bonus.
 
 ## Renderer contract
 
-`zoom_plan.json` is the source of truth and contains final pixel crops:
+`zoom_plan.json` contains final crops:
 
 ```json
 {
@@ -198,52 +216,37 @@ No pattern engine in v1.7 Lite. Ladder/Wave/Punch may be used later as descripti
   "end_ms": 3100,
   "state": "EMPHASIS",
   "direction": "peak",
-  "motion": "slow_push",
+  "motion": "step",
   "crop_start": [0, 0, 1080, 1920],
   "crop_end": [54, 80, 964, 1714],
   "why": "semantic_peak"
 }
 ```
 
-Renderer must execute these crops; it must not re-solve composition.
-
-Content-removing jumpcuts remain separate from framing decisions.
-
-## Pause removal remains a separate content-edit layer
-
-The zoom planner does **not** decide which speech pauses to delete. The existing talking-head skill keeps that responsibility before framing:
-
-- dense speech / short pauses -> preserve continuity;
-- removable silence -> trim according to the speech-cleanup policy and preserve words;
-- remaining pauses may still receive a positive WHEN bonus for a framing transition.
-
-This separation is intentional: removing footage and changing crop are different editing decisions.
-
 ## QC Lite
 
-After render/plan check only:
+Check only:
 
-1. all crops stay inside source bounds;
-2. no forbidden scale below 1.00;
-3. no crop/declared scale exceeds the state/artistic cap;
-4. face/hair/captions remain safe in planned frames;
-5. planned zoom actually changes crop when motion != hold;
-6. ASR/text integrity can be checked by the existing skill flow.
+1. crops inside source bounds;
+2. no scale below 1.00;
+3. no crop above artistic/state cap;
+4. face/hair/captions remain safe;
+5. non-hold motion actually changes crop;
+6. ASR/text integrity through the existing skill flow.
 
-No critic registry, provenance framework, pattern lifecycle, director provider, retention gate, or complex report schema in v1.7 Lite.
+No critic registry, provenance framework, pattern lifecycle, director provider, retention gate, or complex report schema.
 
 ## Definition of done
 
-- `zoom_planner.py` produces a valid plan from observations + semantic events;
-- 1–3 feasible states work automatically;
 - WHY is independent from gaze;
-- importance controls emphasis level while direction can express build / peak / release / neutral;
-- direction does not introduce a hard repeating zoom pattern;
-- 4K quality cannot silently create an aggressive zoom;
-- face travel can degrade an unsafe close framing instead of clipping the subject;
-- blink/blur/long-eye-closure/strong-pose safety is preserved;
-- minimum dwell prevents nervous repeated reframes;
-- pause trimming remains a separate content-edit decision;
-- renderer accepts canonical crop coordinates;
-- simple QC catches invalid crops, no-op zooms, and excessive zoom strength;
-- implementation stays small enough to understand and modify directly.
+- importance controls emphasis level;
+- direction creates build / peak / release / neutral visual energy;
+- EMPHASIS stays rare by default;
+- camera cadence is only a soft prior around ~2.5 s for moderate style;
+- caption cadence remains separate;
+- geometry automatically collapses to 1–3 feasible states;
+- 4K cannot silently create aggressive framing;
+- blink/blur/pose/gesture safety is preserved;
+- renderer receives canonical crop coordinates;
+- simple QC catches invalid/no-op/excessive zoom;
+- implementation remains small enough to understand directly.
