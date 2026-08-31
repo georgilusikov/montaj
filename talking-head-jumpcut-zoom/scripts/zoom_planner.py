@@ -15,7 +15,14 @@ ABSOLUTE_ZOOM_CAP = 1.20
 STYLE_CAP = {"calm": 1.10, "moderate": 1.16, "dynamic": 1.20}
 MIN_STEP = {"calm": 0.04, "moderate": 0.06, "dynamic": 0.06}
 MIN_DWELL_MS = {"calm": 2000, "moderate": 1500, "dynamic": 1200}
+# Soft camera-rhythm prior, calibrated from the clean camera-layer analysis. It is
+# only a boundary bonus; semantic timing remains primary.
+PREFERRED_CHANGE_MS = {"calm": 3000, "moderate": 2500, "dynamic": 2200}
+CADENCE_BONUS_MAX = 0.10
+CADENCE_TOLERANCE_MS = 900
 STRONG_PEAK_MIN_DWELL_MS = 800
+STRONG_PEAK_IMPORTANCE = 0.92
+EMPHASIS_IMPORTANCE = 0.85
 FACE_EDGE_MARGIN = 0.035
 STATE_LEVEL = {"CONTEXT": 0, "ARGUMENT": 1, "EMPHASIS": 2}
 SEMANTIC_DIRECTIONS = {"BUILD", "PEAK", "RELEASE", "NEUTRAL"}
@@ -32,7 +39,7 @@ def _clamp(value: float, lo: float, hi: float) -> float:
 
 def _state_for_importance(value: float) -> str:
     value = _clamp(float(value), 0.0, 1.0)
-    if value >= 0.75:
+    if value >= EMPHASIS_IMPORTANCE:
         return "EMPHASIS"
     if value >= 0.40:
         return "ARGUMENT"
@@ -42,10 +49,11 @@ def _state_for_importance(value: float) -> str:
 def _directed_state(base_desired: str, current_state: str, raw_direction: Any) -> tuple[str, str]:
     """Apply a tiny dramaturgy layer without introducing a pattern engine.
 
-    importance/type answers how much emphasis the sentence deserves. Direction only
+    Importance/type answers how much emphasis the sentence deserves. Direction only
     controls the energy trajectory: BUILD rises at most to ARGUMENT, PEAK may use the
     normal semantic target, RELEASE returns home, and NEUTRAL explicitly holds the
-    current state. If direction is absent/unknown, legacy importance behavior remains.
+    current state. This creates visual tension/release without forcing a repeating
+    zoom pattern.
     """
     if raw_direction is None or not str(raw_direction).strip():
         return base_desired, "auto"
@@ -228,6 +236,8 @@ def _choose_boundary(
     height: int,
     window_ms: int,
     min_ms: int | None = None,
+    last_change_ms: int | None = None,
+    preferred_change_ms: int | None = None,
 ) -> dict[str, Any] | None:
     ranked: list[tuple[float, int, str, dict[str, Any]]] = []
     for raw in candidates:
@@ -261,7 +271,17 @@ def _choose_boundary(
         score += 0.25 if raw.get("word_boundary") else 0.0
         score += 0.20 if raw.get("pause") else 0.0
         score += 0.15 if raw.get("head_return") else 0.0
-        ranked.append((round(score, 6), ms, str(raw.get("id", "")), raw))
+
+        cadence_bonus = 0.0
+        if last_change_ms is not None and preferred_change_ms is not None and ms > last_change_ms:
+            cadence_error = abs((ms - last_change_ms) - preferred_change_ms)
+            cadence_fit = max(0.0, 1.0 - cadence_error / CADENCE_TOLERANCE_MS)
+            cadence_bonus = CADENCE_BONUS_MAX * cadence_fit
+            score += cadence_bonus
+
+        enriched = dict(raw)
+        enriched["cadence_bonus"] = round(cadence_bonus, 6)
+        ranked.append((round(score, 6), ms, str(raw.get("id", "")), enriched))
 
     if not ranked:
         return None
@@ -286,6 +306,7 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
     window_ms = int(config.get("window_ms", 1200))
     absolute_cap = min(float(config.get("absolute_zoom_cap", ABSOLUTE_ZOOM_CAP)), ABSOLUTE_ZOOM_CAP)
     min_dwell_ms = max(0, int(config.get("min_dwell_ms", MIN_DWELL_MS[intensity])))
+    preferred_change_ms = max(0, int(config.get("preferred_change_ms", PREFERRED_CHANGE_MS[intensity])))
     peak_min_dwell_ms = max(0, int(config.get("peak_min_dwell_ms", STRONG_PEAK_MIN_DWELL_MS)))
     state_caps = dict(STATE_CAP)
     for state, value in dict(config.get("state_caps") or {}).items():
@@ -336,7 +357,7 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
         target_crop = list(selected["crop"])
         will_change = target_crop != current_crop
         dwell_required_ms = min_dwell_ms
-        if direction == "peak" and importance >= 0.90:
+        if direction == "peak" and importance >= STRONG_PEAK_IMPORTANCE:
             dwell_required_ms = min(dwell_required_ms, peak_min_dwell_ms)
         earliest_change_ms = None
         if will_change and last_change_ms is not None:
@@ -351,6 +372,8 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
             height=height,
             window_ms=window_ms,
             min_ms=earliest_change_ms,
+            last_change_ms=last_change_ms,
+            preferred_change_ms=preferred_change_ms,
         )
         if boundary is None:
             decisions.append(
@@ -369,7 +392,7 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
         scale_delta = abs(selected["scale"] / max(width / current_crop[2], 1e-9) - 1.0)
         if target_crop == current_crop:
             motion = "hold"
-        elif scale_delta < MIN_STEP[intensity] and importance >= 0.75:
+        elif scale_delta < MIN_STEP[intensity] and importance >= EMPHASIS_IMPORTANCE:
             motion = "slow_push"
         else:
             motion = "step"
@@ -394,6 +417,7 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
                 "available_states": [s["state"] for s in states],
                 "why": "semantic_importance" if direction == "auto" else f"semantic_{direction}",
                 "boundary_score": boundary["score"],
+                "cadence_bonus": boundary.get("cadence_bonus", 0.0),
                 "dwell_required_ms": dwell_required_ms,
             }
         )
@@ -412,7 +436,10 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
             "absolute_zoom_cap": absolute_cap,
             "state_caps": state_caps,
             "min_dwell_ms": min_dwell_ms,
+            "preferred_change_ms": preferred_change_ms,
             "peak_min_dwell_ms": peak_min_dwell_ms,
+            "emphasis_importance": EMPHASIS_IMPORTANCE,
+            "strong_peak_importance": STRONG_PEAK_IMPORTANCE,
         },
         "decisions": decisions,
     }
