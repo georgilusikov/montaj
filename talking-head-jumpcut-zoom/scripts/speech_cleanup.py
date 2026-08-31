@@ -72,6 +72,32 @@ def _output_segments(source_segments: list[tuple[int, int]]) -> tuple[list[dict[
     return kept, cuts
 
 
+def _remap_words(words: list[dict[str, Any]], kept: list[dict[str, int]]) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    for word in words:
+        match = next(
+            (
+                segment
+                for segment in kept
+                if segment["src_start_ms"] <= word["start_ms"]
+                and word["end_ms"] <= segment["src_end_ms"]
+            ),
+            None,
+        )
+        if match is None:
+            raise ValueError("word fell outside kept speech segment")
+        output.append(
+            {
+                **word,
+                "source_start_ms": word["start_ms"],
+                "source_end_ms": word["end_ms"],
+                "start_ms": match["out_start_ms"] + (word["start_ms"] - match["src_start_ms"]),
+                "end_ms": match["out_start_ms"] + (word["end_ms"] - match["src_start_ms"]),
+            }
+        )
+    return output
+
+
 def plan_cleanup(payload: dict[str, Any]) -> dict[str, Any]:
     source = dict(payload.get("source") or {})
     duration_ms = int(source.get("duration_ms") or 0)
@@ -126,7 +152,6 @@ def plan_cleanup(payload: dict[str, Any]) -> dict[str, Any]:
     if final_end > segment_start:
         segments.append((segment_start, final_end))
 
-    # Merge accidental touching/overlapping segments.
     merged: list[tuple[int, int]] = []
     for start, end in segments:
         if not merged or start > merged[-1][1]:
@@ -135,6 +160,7 @@ def plan_cleanup(payload: dict[str, Any]) -> dict[str, Any]:
             merged[-1] = (merged[-1][0], max(merged[-1][1], end))
 
     kept, cuts = _output_segments(merged)
+    output_words = _remap_words(words, kept)
     output_duration_ms = kept[-1]["out_end_ms"] if kept else 0
     removed_ms = duration_ms - output_duration_ms
 
@@ -154,6 +180,7 @@ def plan_cleanup(payload: dict[str, Any]) -> dict[str, Any]:
         "kept_segments": kept,
         "content_cuts_ms": cuts,
         "removed_gaps": removed,
+        "output_words": output_words,
     }
 
 
