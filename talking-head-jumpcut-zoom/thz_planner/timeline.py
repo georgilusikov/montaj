@@ -67,6 +67,14 @@ def framing_to_output(
     return replace(decision, start_ms=out_start, end_ms=out_end, time_basis="output")
 
 
+def _validate_framing_order(framing: tuple[FramingDecision, ...]) -> None:
+    previous_end = -1
+    for decision in framing:
+        if decision.start_ms < previous_end:
+            raise ValueError("framing decisions overlap on output timeline")
+        previous_end = decision.end_ms
+
+
 def build_timeline_manifest(
     *,
     analysis_hash: str,
@@ -87,6 +95,7 @@ def build_timeline_manifest(
             key=lambda x: (x.start_ms, x.segment_id),
         )
     )
+    _validate_framing_order(framing_out)
     manifest: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "planner_version": PLANNER_VERSION,
