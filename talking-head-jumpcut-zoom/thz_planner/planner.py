@@ -32,6 +32,7 @@ def plan_geometry_core(
     pace: str,
     wide_boost: bool = False,
     wide_boost_cap: float | None = None,
+    style_cap_max: float | None = None,
     window_ms: int = 500,
     bands: tuple[DesiredBand, ...] = DEFAULT_BANDS,
     config_payload: dict[str, Any] | None = None,
@@ -45,6 +46,7 @@ def plan_geometry_core(
         intensity,
         wide_boost=wide_boost,
         wide_boost_cap=wide_boost_cap,
+        style_cap_max=style_cap_max,
     )
     fmap = build_temporal_feasibility_map(
         observations,
@@ -81,6 +83,7 @@ def plan_geometry_core(
         "pace": pace,
         "wide_boost": wide_boost,
         "wide_boost_cap": wide_boost_cap,
+        "style_cap_max": style_cap_max,
         "window_ms": window_ms,
         "bands": bands,
     }
