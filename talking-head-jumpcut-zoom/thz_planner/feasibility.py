@@ -4,6 +4,7 @@ from dataclasses import replace
 from statistics import median
 from typing import Iterable
 
+from .framing import solve_normalized_window_crop
 from .schema import (
     CapResolution,
     CompositionMetrics,
@@ -31,32 +32,19 @@ def _quantile(values: list[float], q: float) -> float:
     return xs[lo] * (1.0 - frac) + xs[hi] * frac
 
 
-def _crop_for_observation(obs: FrameObservation, scale: float) -> tuple[float, float, float, float]:
-    """Return normalized source crop x0,y0,x1,y1.
-
-    X tracks face center but is clamped to source bounds. Y first protects 5% output
-    headroom, then is clamped. This is planner geometry, not a renderer pixel crop.
-    """
-    crop_w = 1.0 / scale
-    crop_h = 1.0 / scale
-
-    x0 = obs.face_cx - crop_w / 2.0
-    x0 = max(0.0, min(1.0 - crop_w, x0))
-
-    required_src_headroom = TOP_MARGIN_MIN / scale
-    y0 = obs.hair_top - required_src_headroom
-    y0 = max(0.0, min(1.0 - crop_h, y0))
-    return x0, y0, x0 + crop_w, y0 + crop_h
-
-
 def crop_for_observation(obs: FrameObservation, scale: float) -> tuple[float, float, float, float]:
-    """Public deterministic normalized crop helper used by the planner only."""
-    return _crop_for_observation(obs, scale)
+    """Compatibility one-sample view of the canonical window crop solver."""
+    crop, _ = solve_normalized_window_crop([obs], scale)
+    return crop
 
 
-def _measure(obs: FrameObservation, scale: float) -> tuple[float, float, float, float, float, float, float, tuple[str, ...]]:
-    x0, y0, x1, y1 = _crop_for_observation(obs, scale)
-    # Provisional face-width approximation until analysis emits a tracked face width.
+def _measure(
+    obs: FrameObservation,
+    scale: float,
+    crop: tuple[float, float, float, float],
+) -> tuple[float, float, float, float, float, float, float, tuple[str, ...]]:
+    x0, y0, x1, y1 = crop
+    # Provisional face-width approximation until analysis emits tracked face width.
     face_w = obs.face_ratio * 0.75
     face_left = obs.face_cx - face_w / 2.0
     face_right = obs.face_cx + face_w / 2.0
@@ -79,13 +67,13 @@ def _measure(obs: FrameObservation, scale: float) -> tuple[float, float, float, 
         reasons.append("gesture_hard_block")
     if obs.prop_hard_block:
         reasons.append("prop_hard_block")
-    if top < TOP_MARGIN_MIN:
+    if top < TOP_MARGIN_MIN - 1e-9:
         reasons.append("top_margin")
-    if bottom < BOTTOM_MARGIN_MIN:
+    if bottom < BOTTOM_MARGIN_MIN - 1e-9:
         reasons.append("bottom_margin")
-    if left < SIDE_MARGIN_MIN:
+    if left < SIDE_MARGIN_MIN - 1e-9:
         reasons.append("left_margin")
-    if right < SIDE_MARGIN_MIN:
+    if right < SIDE_MARGIN_MIN - 1e-9:
         reasons.append("right_margin")
 
     return (
@@ -101,8 +89,9 @@ def _measure(obs: FrameObservation, scale: float) -> tuple[float, float, float, 
 
 
 def _window_safe(observations: list[FrameObservation], scale: float) -> tuple[bool, CompositionMetrics, tuple[str, ...]]:
-    rows = [_measure(obs, scale) for obs in observations]
-    reasons = tuple(sorted({r for row in rows for r in row[7]}))
+    crop, crop_reasons = solve_normalized_window_crop(observations, scale)
+    rows = [_measure(obs, scale, crop) for obs in observations]
+    reasons = tuple(sorted(set(crop_reasons) | {r for row in rows for r in row[7]}))
     face = [obs.face_ratio * scale for obs in observations]
     metrics = CompositionMetrics(
         top_margin_min=min(r[0] for r in rows),
