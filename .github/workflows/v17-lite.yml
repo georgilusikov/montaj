@@ -1,0 +1,26 @@
+name: v1.7 Lite
+
+on:
+  push:
+    branches: [v1.7-lite]
+  pull_request:
+    paths:
+      - 'talking-head-jumpcut-zoom/V1_7_LITE.md'
+      - 'talking-head-jumpcut-zoom/scripts/**'
+      - 'talking-head-jumpcut-zoom/tests/test_v17_lite.py'
+      - '.github/workflows/v17-lite.yml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile
+        working-directory: talking-head-jumpcut-zoom
+        run: python -m compileall -q scripts tests/test_v17_lite.py
+      - name: Core tests
+        working-directory: talking-head-jumpcut-zoom
+        run: python -m unittest tests/test_v17_lite.py -v
