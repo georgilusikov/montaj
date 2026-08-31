@@ -14,6 +14,9 @@ STATE_CAP = {"CONTEXT": 1.05, "ARGUMENT": 1.12, "EMPHASIS": 1.20}
 ABSOLUTE_ZOOM_CAP = 1.20
 STYLE_CAP = {"calm": 1.10, "moderate": 1.16, "dynamic": 1.20}
 MIN_STEP = {"calm": 0.04, "moderate": 0.06, "dynamic": 0.06}
+MIN_DWELL_MS = {"calm": 2000, "moderate": 1500, "dynamic": 1200}
+STRONG_PEAK_MIN_DWELL_MS = 800
+FACE_EDGE_MARGIN = 0.035
 STATE_LEVEL = {"CONTEXT": 0, "ARGUMENT": 1, "EMPHASIS": 2}
 SEMANTIC_DIRECTIONS = {"BUILD", "PEAK", "RELEASE", "NEUTRAL"}
 
@@ -89,6 +92,25 @@ def _crop_for_scale(rows: list[dict[str, Any]], width: int, height: int, scale: 
     return x, y, crop_w, crop_h
 
 
+def _face_box_px(row: dict[str, Any], width: int, height: int) -> tuple[float, float, float, float]:
+    """Return a conservative face box in source pixels.
+
+    `face_bbox`, when supplied, is normalized [left, top, right, bottom] and wins.
+    Otherwise derive a conservative box from face center + face-height ratio so the
+    Lite planner can still protect against subject travel without another detector.
+    """
+    bbox = row.get("face_bbox")
+    if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+        left, top, right, bottom = (float(v) for v in bbox)
+        return left * width, top * height, right * width, bottom * height
+
+    cx = float(row.get("face_cx", 0.5)) * width
+    cy = float(row.get("face_cy", 0.34)) * height
+    face_h = max(1.0, float(row.get("face_ratio", 0.0)) * height)
+    face_w = 0.78 * face_h
+    return cx - face_w / 2, cy - face_h / 2, cx + face_w / 2, cy + face_h / 2
+
+
 def _crop_safe(
     rows: list[dict[str, Any]],
     crop: tuple[int, int, int, int],
@@ -101,6 +123,9 @@ def _crop_safe(
     if x < 0 or y < 0 or x + crop_w > width or y + crop_h > height:
         reasons.append("crop_bounds")
 
+    margin_x = FACE_EDGE_MARGIN * crop_w
+    margin_y = FACE_EDGE_MARGIN * crop_h
+
     for row in rows:
         if bool(row.get("hard_block", False)) or bool(row.get("gesture_hard_block", False)):
             reasons.append("hard_gesture_or_prop")
@@ -111,6 +136,17 @@ def _crop_safe(
         if float(row.get("face_ratio", 0.0)) * scale > 0.46:
             reasons.append("face_too_large")
             break
+
+        face_left, face_top, face_right, face_bottom = _face_box_px(row, width, height)
+        if (
+            face_left < x + margin_x
+            or face_right > x + crop_w - margin_x
+            or face_top < y + margin_y
+            or face_bottom > y + crop_h - margin_y
+        ):
+            reasons.append("face_travel")
+            break
+
         hair_top = row.get("hair_top")
         if hair_top is not None:
             hair_out = (float(hair_top) * height - y) / crop_h
@@ -191,13 +227,31 @@ def _choose_boundary(
     width: int,
     height: int,
     window_ms: int,
+    min_ms: int | None = None,
 ) -> dict[str, Any] | None:
     ranked: list[tuple[float, int, str, dict[str, Any]]] = []
     for raw in candidates:
-        if raw.get("blink") or raw.get("blur") or raw.get("hard_block"):
+        if (
+            raw.get("blink")
+            or raw.get("blur")
+            or raw.get("hard_block")
+            or raw.get("eyes_closed")
+            or raw.get("long_eye_closure")
+            or raw.get("pose_unsafe")
+            or raw.get("strong_head_turn")
+        ):
             continue
         ms = int(raw["ms"])
+        if min_ms is not None and ms < min_ms:
+            continue
         rows = _samples(observations, ms, window_ms)
+        if any(
+            bool(row.get("long_eye_closure", False))
+            or bool(row.get("pose_unsafe", False))
+            or bool(row.get("strong_head_turn", False))
+            for row in rows
+        ):
+            continue
         crop = tuple(int(v) for v in selected_state["crop"])
         safe, _ = _crop_safe(rows, crop, width, height, float(selected_state["scale"]))
         if not safe:
@@ -227,8 +281,12 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
 
     config = dict(payload.get("config") or {})
     intensity = str(config.get("intensity", "moderate"))
+    if intensity not in STYLE_CAP:
+        raise ValueError(f"unknown intensity: {intensity}")
     window_ms = int(config.get("window_ms", 1200))
     absolute_cap = min(float(config.get("absolute_zoom_cap", ABSOLUTE_ZOOM_CAP)), ABSOLUTE_ZOOM_CAP)
+    min_dwell_ms = max(0, int(config.get("min_dwell_ms", MIN_DWELL_MS[intensity])))
+    peak_min_dwell_ms = max(0, int(config.get("peak_min_dwell_ms", STRONG_PEAK_MIN_DWELL_MS)))
     state_caps = dict(STATE_CAP)
     for state, value in dict(config.get("state_caps") or {}).items():
         state = str(state).upper()
@@ -240,6 +298,7 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
 
     current_state = "CONTEXT"
     current_crop = [0, 0, width, height]
+    last_change_ms: int | None = None
     decisions: list[dict[str, Any]] = []
 
     for event in events:
@@ -274,6 +333,15 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
             )
             continue
 
+        target_crop = list(selected["crop"])
+        will_change = target_crop != current_crop
+        dwell_required_ms = min_dwell_ms
+        if direction == "peak" and importance >= 0.90:
+            dwell_required_ms = min(dwell_required_ms, peak_min_dwell_ms)
+        earliest_change_ms = None
+        if will_change and last_change_ms is not None:
+            earliest_change_ms = last_change_ms + dwell_required_ms
+
         boundary = _choose_boundary(
             event_ms,
             list(event.get("boundary_candidates") or []),
@@ -282,6 +350,7 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
             width=width,
             height=height,
             window_ms=window_ms,
+            min_ms=earliest_change_ms,
         )
         if boundary is None:
             decisions.append(
@@ -292,11 +361,11 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
                     "direction": direction,
                     "base_desired_state": base_desired,
                     "desired_state": desired,
+                    "earliest_change_ms": earliest_change_ms,
                 }
             )
             continue
 
-        target_crop = list(selected["crop"])
         scale_delta = abs(selected["scale"] / max(width / current_crop[2], 1e-9) - 1.0)
         if target_crop == current_crop:
             motion = "hold"
@@ -325,9 +394,12 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
                 "available_states": [s["state"] for s in states],
                 "why": "semantic_importance" if direction == "auto" else f"semantic_{direction}",
                 "boundary_score": boundary["score"],
+                "dwell_required_ms": dwell_required_ms,
             }
         )
         current_state = selected["state"]
+        if will_change:
+            last_change_ms = start_ms
         current_crop = target_crop
 
     return {
@@ -339,6 +411,8 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
             "quality_cap": quality_cap,
             "absolute_zoom_cap": absolute_cap,
             "state_caps": state_caps,
+            "min_dwell_ms": min_dwell_ms,
+            "peak_min_dwell_ms": peak_min_dwell_ms,
         },
         "decisions": decisions,
     }
