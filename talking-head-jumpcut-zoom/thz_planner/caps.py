@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
-
 from .schema import CapResolution, QualityMetrics
 
 STYLE_CAPS = {
@@ -54,14 +52,23 @@ def resolve_style_cap(
     *,
     wide_boost: bool = False,
     wide_boost_cap: float | None = None,
+    style_cap_max: float | None = None,
 ) -> tuple[float, tuple[str, ...]]:
     if intensity not in STYLE_CAPS:
         raise ValueError(f"unknown intensity: {intensity}")
+    if style_cap_max is not None and style_cap_max < 1.0:
+        raise ValueError("style_cap_max must be >=1.00")
+
     base = STYLE_CAPS[intensity]
-    if not wide_boost:
-        return base, (f"style:{intensity}",)
-    boosted = max(base, wide_boost_cap if wide_boost_cap is not None else base)
-    return round(boosted, 6), (f"style:{intensity}", "wide_boost")
+    reasons: list[str] = [f"style:{intensity}"]
+    style = base
+    if wide_boost:
+        style = max(base, wide_boost_cap if wide_boost_cap is not None else base)
+        reasons.append("wide_boost")
+    if style_cap_max is not None and style > style_cap_max:
+        style = style_cap_max
+        reasons.append(f"style_cap_max:{style_cap_max:.2f}")
+    return round(style, 6), tuple(reasons)
 
 
 def resolve_caps(
@@ -70,12 +77,14 @@ def resolve_caps(
     *,
     wide_boost: bool = False,
     wide_boost_cap: float | None = None,
+    style_cap_max: float | None = None,
 ) -> CapResolution:
     prior, quality, q_reasons = resolve_quality_cap(metrics)
     style, s_reasons = resolve_style_cap(
         intensity,
         wide_boost=wide_boost,
         wide_boost_cap=wide_boost_cap,
+        style_cap_max=style_cap_max,
     )
     return CapResolution(
         quality_cap_prior=prior,
