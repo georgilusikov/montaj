@@ -4,8 +4,10 @@ from thz_critic import (
     CheckRegistry,
     CheckResult,
     CriticProvenance,
+    build_bound_provenance,
     build_critic_report,
     canonical_report_json,
+    expected_inputs_sha256,
     hash_named_inputs,
 )
 
@@ -38,6 +40,18 @@ class CriticReportTests(unittest.TestCase):
             CheckResult(spec.check_id, "pass")
             for spec in registry.resolve(profile="live")
         ]
+
+    def test_bound_builder_derives_inputs_hash(self):
+        provenance = build_bound_provenance(
+            critic_version="1.7.1-dev.1",
+            script_sha256="a" * 64,
+            master_sha256="e" * 64,
+            manifest_sha256="b" * 64,
+            analysis_sha256="c" * 64,
+            renderer_program_sha256="d" * 64,
+        )
+        self.assertEqual(provenance.inputs_sha256, expected_inputs_sha256(provenance))
+        self.assertTrue(provenance.pass1_independent)
 
     def test_report_is_byte_stable_for_reordered_results(self):
         registry = CheckRegistry()
