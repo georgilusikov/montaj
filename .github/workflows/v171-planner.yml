@@ -34,8 +34,14 @@ jobs:
           python -m thz_planner.cli examples/v171_planner_input.json /tmp/v171_a.json
           python -m thz_planner.cli examples/v171_planner_input.json /tmp/v171_b.json
           cmp /tmp/v171_a.json /tmp/v171_b.json
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
       - name: FFmpeg canonical crop smoke
         working-directory: talking-head-jumpcut-zoom
+        env:
+          PYTHONPATH: .
         run: |
           ffmpeg -version | head -n 1
           python tests/ffmpeg_smoke.py
