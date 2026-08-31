@@ -4,6 +4,7 @@ from typing import Any
 
 from .framing import canonical_crop_pair
 from .motion import MotionPlan, fit_motion_duration
+from .patterns import PatternSpec
 from .schema import FramingDecision, FrameObservation, QualityMetrics, RenderPrimitive
 from .window_queries import feasible_ranges
 
@@ -80,6 +81,9 @@ def materialize_framing_decision(
     pattern = transition.get("pattern")
     pattern_id = pattern.get("pattern_id") if isinstance(pattern, dict) else None
     pattern_score = pattern.get("score") if isinstance(pattern, dict) else None
+    pattern_metadata = pattern.get("metadata") if isinstance(pattern, dict) else None
+    if not isinstance(pattern_metadata, PatternSpec):
+        pattern_metadata = None
     limiting = tuple(selected_state.limiting_reasons)
 
     return FramingDecision(
@@ -103,6 +107,11 @@ def materialize_framing_decision(
             "pattern_shaped": bool(transition.get("pattern_shaped", False)),
             "pattern_elapsed_ms": int(transition.get("pattern_elapsed_ms", 0)),
             "pattern_expired": bool(transition.get("pattern_expired", False)),
+            "pattern_required_reset": pattern_metadata.required_reset if pattern_metadata else False,
+            "pattern_max_duration_ms": pattern_metadata.max_duration_ms if pattern_metadata else None,
+            "pattern_allowed_terminal_states": (
+                pattern_metadata.allowed_terminal_states if pattern_metadata else ()
+            ),
         },
         can={
             "feasible_range": (start_ms, feasible_end),
