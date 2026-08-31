@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import json
 import re
@@ -17,6 +17,8 @@ class FFmpegSegmentProgram:
     filtergraph_template: str
     sendcmd_text: str | None
     command_file_token: str | None
+    source_start_ms: int | None = None
+    source_end_ms: int | None = None
 
 
 @dataclass(frozen=True)
@@ -120,6 +122,8 @@ def _program_rows(programs: Iterable[FFmpegSegmentProgram]) -> list[dict[str, ob
             "segment_id": program.segment_id,
             "start_ms": program.start_ms,
             "end_ms": program.end_ms,
+            "source_start_ms": program.source_start_ms,
+            "source_end_ms": program.source_end_ms,
             "filtergraph_template": program.filtergraph_template,
             "sendcmd_text": program.sendcmd_text,
             "command_file_token": program.command_file_token,
@@ -139,12 +143,36 @@ def _sha256_json(payload: object) -> str:
 
 
 def ffmpeg_program_sha256(programs: Iterable[FFmpegSegmentProgram]) -> str:
-    """Hash exact renderer instructions, including timeline placement.
+    """Hash exact renderer instructions, including timeline/source placement.
 
-    Ephemeral sendcmd file paths are still excluded because only the unbound command
+    Ephemeral sendcmd file paths are excluded because only the unbound command
     token/template is hashed.
     """
     return _sha256_json(_program_rows(programs))
+
+
+def _field(item: object, name: str) -> int:
+    if isinstance(item, dict):
+        return int(item[name])
+    return int(getattr(item, name))
+
+
+def _source_range_for_output(
+    manifest: dict[str, Any],
+    start_ms: int,
+    end_ms: int,
+) -> tuple[int, int]:
+    matches: list[tuple[int, int]] = []
+    for edit in manifest.get("content_edits", ()):
+        out_start = _field(edit, "out_start_ms")
+        out_end = _field(edit, "out_end_ms")
+        if out_start <= start_ms <= end_ms <= out_end:
+            src_start = _field(edit, "src_start_ms") + (start_ms - out_start)
+            src_end = _field(edit, "src_start_ms") + (end_ms - out_start)
+            matches.append((src_start, src_end))
+    if len(matches) != 1:
+        raise ValueError("renderer segment must map to exactly one kept source interval")
+    return matches[0]
 
 
 def compile_ffmpeg_timeline(
@@ -158,9 +186,9 @@ def compile_ffmpeg_timeline(
 ) -> FFmpegTimelineProgram:
     """Compile a complete renderer-facing manifest into one hashed program.
 
-    The hash binds manifest identity, exact temporal placement, dimensions, fps and
-    every crop/sendcmd instruction. It is suitable for critic provenance and cannot
-    collide merely because the same crop sequence was shifted on the timeline.
+    The hash binds manifest identity, output and source temporal placement,
+    dimensions, fps and every crop/sendcmd instruction. It is suitable for critic
+    provenance and cannot collide merely because the same crop sequence moved.
     """
     if fps <= 0:
         raise ValueError("fps must be positive")
@@ -169,7 +197,7 @@ def compile_ffmpeg_timeline(
         raise ValueError("manifest requires canonical manifest_hash")
 
     plans = compile_render_plan(manifest, fps=fps)
-    programs = tuple(
+    raw_programs = tuple(
         compile_ffmpeg_segment(
             plan,
             source_w=source_w,
@@ -179,12 +207,26 @@ def compile_ffmpeg_timeline(
         )
         for plan in plans
     )
+    programs: list[FFmpegSegmentProgram] = []
     previous_end = -1
-    for program in programs:
+    for program in raw_programs:
         if program.start_ms < previous_end:
             raise ValueError("renderer programs overlap")
         previous_end = program.end_ms
+        src_start, src_end = _source_range_for_output(
+            manifest,
+            program.start_ms,
+            program.end_ms,
+        )
+        programs.append(
+            replace(
+                program,
+                source_start_ms=src_start,
+                source_end_ms=src_end,
+            )
+        )
 
+    program_tuple = tuple(programs)
     fps_canonical = round(float(fps), 6)
     renderer_hash = _sha256_json(
         {
@@ -194,7 +236,7 @@ def compile_ffmpeg_timeline(
             "source_h": source_h,
             "output_w": output_w,
             "output_h": output_h,
-            "segments": _program_rows(programs),
+            "segments": _program_rows(program_tuple),
         }
     )
     return FFmpegTimelineProgram(
@@ -204,7 +246,7 @@ def compile_ffmpeg_timeline(
         source_h=source_h,
         output_w=output_w,
         output_h=output_h,
-        segments=programs,
+        segments=program_tuple,
         renderer_program_sha256=renderer_hash,
     )
 
