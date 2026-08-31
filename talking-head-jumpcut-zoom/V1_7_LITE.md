@@ -30,6 +30,7 @@ Gaze/head pose may improve WHEN, but must not create WHY.
 `analysis.json` contains observations/evidence only:
 
 - semantic events: `importance`, optional `type`, optional `direction`;
+- optional `zoom_duration_type`: `micro_punch`, `beat`, or `argument_hold`;
 - face ratio / face center / hair top;
 - optional normalized `face_bbox`;
 - caption overlap / gesture or prop hard block;
@@ -127,8 +128,6 @@ Optional values:
 - `release` — return toward CONTEXT and restore visual breathing room;
 - `neutral` — preserve current framing unless geometry forces degradation.
 
-This is the minimal dramaturgy model:
-
 ```text
 build   -> visually closer / more focused
 peak    -> strongest justified framing
@@ -136,9 +135,7 @@ release -> wider / calmer framing
 neutral -> hold
 ```
 
-It is **not** a mandatory repeating sequence. The semantics may produce `peak -> release -> neutral`, several builds, or a long neutral section.
-
-The goal is controlled visual tension and relief, not a mechanical zoom pattern.
+This is not a mandatory repeating pattern. The goal is controlled visual tension and relief.
 
 ## WHEN: safety first, rhythm second
 
@@ -170,23 +167,64 @@ A very strong explicit peak (`importance >= 0.92`) may use the provisional **800
 
 ### Preferred camera cadence
 
-The clean camera-layer analysis suggests a normal talking-head camera/framing change roughly every **2.4–2.7 s**.
-
-v1.7 Lite therefore uses only a **soft timing bonus**, not a hard cadence:
+The camera-layer reference suggests a normal framing refresh roughly every **2.4–2.7 s**, but this is only a soft preference:
 
 - calm target: ~3.0 s
 - moderate target: ~2.5 s
 - dynamic target: ~2.2 s
 
-Meaning always wins over the timer. If the best semantic boundary occurs at 1.9 s or 3.2 s, the planner may use it.
+Meaning wins over the timer. The planner must never manufacture a zoom just because the cadence target expired.
 
-### Captions are a separate rhythm layer
+### Captions are separate
 
-Kinetic subtitle/text changes may happen faster (roughly ~1.5–1.8 s in the reference analysis), but this cadence must **not** drive the camera zoom planner.
+Caption/subtitle pacing is handled elsewhere and must not drive the zoom planner.
 
 ```text
 camera/framing rhythm != caption rhythm
 ```
+
+## Zoom episodes: duration + return
+
+ARGUMENT and EMPHASIS are normally **temporary semantic episodes**, not persistent states that remain until the next semantic event.
+
+Default duration bands, calibrated from the reference montage analysis:
+
+- `micro_punch`: **0.8–1.4 s** — one word / short prohibition / tiny antithesis;
+- `beat`: **1.5–2.4 s** — one compact semantic clause;
+- `argument_hold`: **2.5–3.5 s** — a longer explanatory argument.
+
+If `zoom_duration_type` is absent, the planner infers the band from the semantic clause length (`end_ms - start_ms`) and clamps it to the band.
+
+After the zoom episode ends, the planner normally emits an automatic return to the feasible CONTEXT crop:
+
+```text
+CONTEXT
+  -> ARGUMENT / EMPHASIS
+  -> hold for semantic clause
+  -> CONTEXT
+```
+
+This prevents the close framing from sticking for 5–10 seconds simply because the next semantic event has not arrived yet.
+
+### Sustained tension
+
+Do **not** force a visible return between tightly connected semantic beats.
+
+If a nearby following event is explicitly `build` or `peak` and arrives within the current episode (or within a small grace window), the first episode may stay close and the next event extends/re-shapes the tension:
+
+```text
+ARGUMENT -> EMPHASIS -> CONTEXT
+```
+
+instead of:
+
+```text
+ARGUMENT -> CONTEXT -> EMPHASIS
+```
+
+with an ugly split-second flash of the base framing.
+
+The semantic layer may also set `zoom_duration_type` explicitly when it knows that a phrase is a micro-punch, normal beat, or extended argument.
 
 ## Motion
 
@@ -208,20 +246,24 @@ The zoom planner does not decide which spoken pauses to remove. Existing speech-
 
 ## Renderer contract
 
-`zoom_plan.json` contains final crops:
+`zoom_plan.json` contains semantic decisions plus explicit automatic returns. Example decision:
 
 ```json
 {
   "start_ms": 1200,
-  "end_ms": 3100,
-  "state": "EMPHASIS",
-  "direction": "peak",
+  "end_ms": 3200,
+  "state": "ARGUMENT",
+  "direction": "build",
   "motion": "step",
+  "zoom_duration_type": "beat",
+  "zoom_duration_ms": 2000,
+  "auto_return": true,
   "crop_start": [0, 0, 1080, 1920],
-  "crop_end": [54, 80, 964, 1714],
-  "why": "semantic_peak"
+  "crop_end": [48, 74, 982, 1746]
 }
 ```
+
+The top-level `returns` array contains the exact CONTEXT return commands. Renderer executes both semantic decisions and returns; it must not invent timing or composition.
 
 ## QC Lite
 
@@ -242,11 +284,13 @@ No critic registry, provenance framework, pattern lifecycle, director provider, 
 - importance controls emphasis level;
 - direction creates build / peak / release / neutral visual energy;
 - EMPHASIS stays rare by default;
-- camera cadence is only a soft prior around ~2.5 s for moderate style;
-- caption cadence remains separate;
+- camera cadence is a soft prior, not a zoom generator;
+- zoom duration follows the semantic clause rather than a fixed metronome;
+- a finished zoom episode normally returns to CONTEXT;
+- adjacent build/peak beats can sustain tension without a base-frame flash;
 - geometry automatically collapses to 1–3 feasible states;
 - 4K cannot silently create aggressive framing;
 - blink/blur/pose/gesture safety is preserved;
-- renderer receives canonical crop coordinates;
+- renderer receives canonical crop coordinates and explicit return timing;
 - simple QC catches invalid/no-op/excessive zoom;
 - implementation remains small enough to understand directly.
