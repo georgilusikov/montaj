@@ -1,12 +1,69 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+import json
 from pathlib import Path
+import subprocess
+import tempfile
 
-from .ffmpeg import FFmpegSegmentProgram, bind_sendcmd_file
+from .ffmpeg import FFmpegSegmentProgram, FFmpegTimelineProgram, bind_sendcmd_file
+
+
+@dataclass(frozen=True)
+class VideoProbe:
+    width: int
+    height: int
+    fps: float
 
 
 def _seconds(ms: int) -> str:
     return f"{ms / 1000.0:.6f}"
+
+
+def _rate(value: str) -> float:
+    if "/" in value:
+        num, den = value.split("/", 1)
+        denominator = float(den)
+        if denominator == 0:
+            raise ValueError("invalid ffprobe frame rate")
+        return float(num) / denominator
+    return float(value)
+
+
+def probe_video(path: str | Path) -> VideoProbe:
+    source = Path(path)
+    if not source.is_file():
+        raise ValueError("source video does not exist")
+    completed = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height,avg_frame_rate,r_frame_rate",
+            "-of",
+            "json",
+            str(source),
+        ],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    payload = json.loads(completed.stdout)
+    streams = list(payload.get("streams") or [])
+    if len(streams) != 1:
+        raise ValueError("source must expose exactly one selected video stream")
+    stream = streams[0]
+    width = int(stream["width"])
+    height = int(stream["height"])
+    rate = str(stream.get("avg_frame_rate") or stream.get("r_frame_rate") or "0")
+    fps = _rate(rate)
+    if width <= 0 or height <= 0 or fps <= 0:
+        raise ValueError("invalid source video probe")
+    return VideoProbe(width=width, height=height, fps=round(fps, 6))
 
 
 def ffmpeg_segment_command(
@@ -110,3 +167,57 @@ def ffmpeg_concat_command(
         "copy",
         str(output_path),
     ]
+
+
+def _run(args: list[str]) -> None:
+    subprocess.run(
+        args,
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+
+
+def execute_video_timeline(
+    timeline: FFmpegTimelineProgram,
+    *,
+    input_path: str | Path,
+    output_path: str | Path,
+    video_codec: str = "libx264",
+    preset: str = "ultrafast",
+    crf: int = 18,
+) -> None:
+    """Render and concatenate a complete deterministic video-only timeline."""
+    source = Path(input_path)
+    if not source.is_file():
+        raise ValueError("source video does not exist")
+    if not timeline.segments:
+        raise ValueError("renderer timeline has no segments")
+    target = Path(output_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory(prefix="thz_render_") as tmp:
+        root = Path(tmp)
+        rendered: list[Path] = []
+        for index, program in enumerate(timeline.segments):
+            segment_path = root / f"segment_{index:05d}.mp4"
+            sendcmd_path = None
+            if program.sendcmd_text is not None:
+                sendcmd_path = root / f"commands_{index:05d}.txt"
+                write_sendcmd_file(program, sendcmd_path)
+            _run(
+                ffmpeg_segment_command(
+                    program,
+                    input_path=source,
+                    output_path=segment_path,
+                    sendcmd_path=sendcmd_path,
+                    video_codec=video_codec,
+                    preset=preset,
+                    crf=crf,
+                )
+            )
+            rendered.append(segment_path)
+
+        concat_path = root / "concat.txt"
+        concat_path.write_text(concat_list_text(rendered), encoding="utf-8")
+        _run(ffmpeg_concat_command(concat_list_path=concat_path, output_path=target))
