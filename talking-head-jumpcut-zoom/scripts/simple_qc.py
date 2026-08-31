@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-DEFAULT_STATE_CAP = {"CONTEXT": 1.05, "ARGUMENT": 1.12, "EMPHASIS": 1.20}
+DEFAULT_STATE_CAP = {"CONTEXT": 1.00, "ARGUMENT": 1.12, "EMPHASIS": 1.20}
 DEFAULT_ABSOLUTE_ZOOM_CAP = 1.20
 
 
