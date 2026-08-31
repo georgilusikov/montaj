@@ -8,6 +8,7 @@ on:
       - 'talking-head-jumpcut-zoom/thz_planner/**'
       - 'talking-head-jumpcut-zoom/thz_critic/**'
       - 'talking-head-jumpcut-zoom/thz_render/**'
+      - 'talking-head-jumpcut-zoom/thz_semantics/**'
       - 'talking-head-jumpcut-zoom/tests/**'
       - 'talking-head-jumpcut-zoom/docs/V1_7_1_SPEC.md'
       - '.github/workflows/v171-planner.yml'
@@ -22,7 +23,7 @@ jobs:
           python-version: '3.11'
       - name: Compile
         working-directory: talking-head-jumpcut-zoom
-        run: python -m compileall -q thz_planner thz_critic thz_render tests
+        run: python -m compileall -q thz_planner thz_critic thz_render thz_semantics tests
       - name: Unit tests
         working-directory: talking-head-jumpcut-zoom
         run: python -m unittest discover -s tests -v
