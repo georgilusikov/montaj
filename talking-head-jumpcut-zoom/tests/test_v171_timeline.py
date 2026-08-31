@@ -97,6 +97,39 @@ class TimelineContractTests(unittest.TestCase):
                 source_type="live",
             )
 
+    def test_output_content_timeline_must_start_at_zero(self):
+        with self.assertRaisesRegex(ValueError, "start at 0"):
+            build_timeline_manifest(
+                analysis_hash="a",
+                config_hash="c",
+                content_edits=[ContentEdit("late", 1000, 1500, 100, 600)],
+                framing_decisions=[],
+                source_type="live",
+            )
+
+    def test_output_content_edits_must_be_contiguous(self):
+        with self.assertRaisesRegex(ValueError, "contiguous"):
+            build_timeline_manifest(
+                analysis_hash="a",
+                config_hash="c",
+                content_edits=[
+                    ContentEdit("a", 0, 500, 0, 500),
+                    ContentEdit("b", 1000, 1500, 600, 1100),
+                ],
+                framing_decisions=[],
+                source_type="live",
+            )
+
+    def test_zero_duration_content_edit_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "positive"):
+            build_timeline_manifest(
+                analysis_hash="a",
+                config_hash="c",
+                content_edits=[ContentEdit("zero", 1000, 1000, 0, 0)],
+                framing_decisions=[],
+                source_type="live",
+            )
+
     def test_manifest_is_byte_stable_and_pre_render_valid(self):
         kwargs = dict(
             analysis_hash="a",
