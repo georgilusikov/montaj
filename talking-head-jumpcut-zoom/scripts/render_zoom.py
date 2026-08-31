@@ -15,31 +15,45 @@ def _lerp(a: int, b: int, alpha: float) -> int:
 
 
 def _timeline_items(plan: dict[str, Any]) -> list[dict[str, Any]]:
-    items = [dict(d) for d in plan.get("decisions", []) if d.get("status") == "PLANNED"]
-    items.extend(dict(r) for r in plan.get("returns", []))
-    items.sort(key=lambda item: (int(item.get("start_ms", 0)), 0 if item.get("why") != "auto_return_context" else 1))
+    items: list[dict[str, Any]] = []
+    for d in plan.get("decisions", []):
+        if d.get("status") == "PLANNED":
+            item = dict(d)
+            item["_priority"] = 2  # semantic command wins at the same timestamp
+            items.append(item)
+    for r in plan.get("returns", []):
+        item = dict(r)
+        item["_priority"] = 0  # return first, then a coincident new semantic command
+        items.append(item)
+    for r in plan.get("refreshes", []):
+        if r.get("status") == "PLANNED":
+            item = dict(r)
+            item["_priority"] = 1
+            items.append(item)
+    items.sort(key=lambda item: (int(item.get("start_ms", 0)), int(item.get("_priority", 1))))
     return items
 
 
 def _commands(plan: dict[str, Any], hz: int = 10) -> str:
     target = "thz"
-    keyframes: list[tuple[int, list[int]]] = []
+    keyframes: list[tuple[int, int, list[int]]] = []
 
     for decision in _timeline_items(plan):
         start_ms = int(decision["start_ms"])
         start = [int(v) for v in decision["crop_start"]]
         end = [int(v) for v in decision["crop_end"]]
         motion = str(decision.get("motion", "step"))
+        priority = int(decision.get("_priority", 1))
 
         if motion == "hold":
             continue
         if motion == "step":
-            keyframes.append((start_ms, end))
+            keyframes.append((start_ms, priority, end))
             continue
 
         transition_end_ms = int(decision.get("transition_end_ms", decision.get("end_ms", start_ms)))
         if transition_end_ms <= start_ms:
-            keyframes.append((start_ms, end))
+            keyframes.append((start_ms, priority, end))
             continue
 
         duration = transition_end_ms - start_ms
@@ -48,13 +62,12 @@ def _commands(plan: dict[str, Any], hz: int = 10) -> str:
             alpha = index / steps
             t_ms = start_ms + int(round(duration * alpha))
             crop = [_lerp(a, b, alpha) for a, b in zip(start, end)]
-            keyframes.append((t_ms, crop))
+            keyframes.append((t_ms, priority, crop))
 
-    # Returns and semantic transitions share one command stream. Sort globally so an
-    # automatic return can never be emitted after a later semantic command by accident.
-    keyframes.sort(key=lambda item: item[0])
+    # Stable priority at equal timestamps: auto-return -> ambient -> semantic.
+    keyframes.sort(key=lambda item: (item[0], item[1]))
     lines: list[str] = []
-    for t_ms, crop in keyframes:
+    for t_ms, _, crop in keyframes:
         stamp = f"{t_ms / 1000.0:.6f}"
         x, y, w, h = crop
         lines.extend(
