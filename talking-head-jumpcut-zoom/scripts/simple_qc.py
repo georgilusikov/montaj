@@ -6,16 +6,32 @@ import json
 from pathlib import Path
 from typing import Any
 
+DEFAULT_STATE_CAP = {"CONTEXT": 1.05, "ARGUMENT": 1.12, "EMPHASIS": 1.20}
+DEFAULT_ABSOLUTE_ZOOM_CAP = 1.20
+
 
 def check(plan: dict[str, Any]) -> dict[str, Any]:
     width = int(plan["source"]["width"])
     height = int(plan["source"]["height"])
+    config = dict(plan.get("config") or {})
+    absolute_cap = min(float(config.get("absolute_zoom_cap", DEFAULT_ABSOLUTE_ZOOM_CAP)), DEFAULT_ABSOLUTE_ZOOM_CAP)
+    state_caps = dict(DEFAULT_STATE_CAP)
+    for state, value in dict(config.get("state_caps") or {}).items():
+        state = str(state).upper()
+        if state in state_caps:
+            state_caps[state] = min(float(value), DEFAULT_ABSOLUTE_ZOOM_CAP)
+
     errors: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
 
     for index, decision in enumerate(plan.get("decisions", [])):
         if decision.get("status") != "PLANNED":
             continue
+
+        state = str(decision.get("state", "CONTEXT")).upper()
+        state_cap = min(state_caps.get(state, absolute_cap), absolute_cap)
+        end_scale = None
+
         for key in ("crop_start", "crop_end"):
             crop = [int(v) for v in decision[key]]
             if len(crop) != 4:
@@ -29,6 +45,30 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
             scale = min(width / max(w, 1), height / max(h, 1))
             if scale < 0.999:
                 errors.append({"index": index, "check": "scale_below_1", "field": key, "scale": scale})
+            if key == "crop_end":
+                end_scale = scale
+
+        declared_scale = decision.get("scale")
+        if declared_scale is not None and float(declared_scale) > state_cap + 0.005:
+            errors.append(
+                {
+                    "index": index,
+                    "check": "zoom_too_aggressive",
+                    "state": state,
+                    "scale": float(declared_scale),
+                    "cap": state_cap,
+                }
+            )
+        if end_scale is not None and end_scale > state_cap + 0.01:
+            errors.append(
+                {
+                    "index": index,
+                    "check": "crop_scale_too_aggressive",
+                    "state": state,
+                    "scale": round(end_scale, 4),
+                    "cap": state_cap,
+                }
+            )
 
         motion = str(decision.get("motion", "hold"))
         if motion != "hold" and decision.get("crop_start") == decision.get("crop_end"):
