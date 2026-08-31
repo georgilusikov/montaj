@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import asdict
 from typing import Any
 
 from .caps import resolve_caps
@@ -16,7 +15,7 @@ from .schema import (
 )
 from .shot_states import derive_distinct_states
 
-PLANNER_VERSION = "1.7.1-dev.1"
+PLANNER_VERSION = "1.7.1-dev.2"
 
 DEFAULT_BANDS = (
     DesiredBand(ShotState.CONTEXT, 0.26, 0.34, 0.30),
@@ -37,11 +36,7 @@ def plan_geometry_core(
     bands: tuple[DesiredBand, ...] = DEFAULT_BANDS,
     config_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """P0 geometry planner.
-
-    This intentionally stops before WHY/PATTERN/WHEN. It produces deterministic
-    temporal feasibility and the distinct states available in each time bucket.
-    """
+    """Deterministic P0 geometry core used before semantic decision planning."""
     if not observations:
         raise ValueError("observations required")
 
