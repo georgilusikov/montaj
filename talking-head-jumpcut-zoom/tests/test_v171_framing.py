@@ -83,11 +83,14 @@ class CanonicalFramingTests(unittest.TestCase):
         self.assertEqual(crop.x % 2, 0)
         self.assertAlmostEqual(crop.x / metrics.width, normalized[0], delta=0.003)
 
-    def test_excessive_subject_travel_makes_tight_state_infeasible(self):
+    def test_excessive_subject_travel_reduces_geometry_cap_until_fixed_crop_is_safe(self):
         rows = [
-            FrameObservation(0, 0.30, 0.34, 0.34, 0.15, 0.72),
-            FrameObservation(250, 0.30, 0.66, 0.34, 0.15, 0.72),
+            FrameObservation(0, 0.30, 0.20, 0.34, 0.15, 0.72),
+            FrameObservation(250, 0.30, 0.80, 0.34, 0.15, 0.72),
         ]
+        _, tight_reasons = solve_normalized_window_crop(rows, 1.20)
+        self.assertIn("x_window_no_solution", tight_reasons)
+
         result = plan_geometry_core(
             observations=rows,
             quality=QualityMetrics(1080, 1920),
@@ -95,10 +98,11 @@ class CanonicalFramingTests(unittest.TestCase):
             pace="neutral",
             window_ms=500,
         )
-        self.assertFalse(state_is_feasible(result, ShotState.EMPHASIS, 100))
         intervals = result["windows"][0]["intervals"]
         emphasis = next(item for item in intervals if item.state is ShotState.EMPHASIS)
-        self.assertIn("x_window_no_solution", emphasis.hard_reasons)
+        self.assertLess(emphasis.actual_scale, 1.20)
+        _, resolved_reasons = solve_normalized_window_crop(rows, emphasis.actual_scale)
+        self.assertNotIn("x_window_no_solution", resolved_reasons)
 
 
 class TemporalQueryTests(unittest.TestCase):
