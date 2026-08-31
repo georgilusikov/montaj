@@ -30,6 +30,16 @@ def sha256_file(path: str | Path) -> str:
     return digest.hexdigest()
 
 
+def critic_package_sha256(package_dir: str | Path | None = None) -> str:
+    """Hash the complete Python critic package with filenames bound to contents."""
+    root = Path(package_dir) if package_dir is not None else Path(__file__).resolve().parent
+    files = sorted(path for path in root.glob("*.py") if path.is_file())
+    if not files:
+        raise ValueError("critic package contains no Python files")
+    rows = [f"{path.name}={sha256_file(path)}" for path in files]
+    return sha256_bytes("\n".join(rows).encode("utf-8"))
+
+
 def _validate_sha256(name: str, value: str) -> None:
     if len(value) != 64 or any(c not in "0123456789abcdef" for c in value.lower()):
         raise ValueError(f"invalid {name}")
