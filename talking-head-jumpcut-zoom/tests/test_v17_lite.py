@@ -66,6 +66,7 @@ class LitePlannerTests(unittest.TestCase):
         decision = result["decisions"][0]
         self.assertEqual(decision["available_states"], ["CONTEXT", "EMPHASIS"])
         self.assertEqual(decision["state"], "EMPHASIS")
+        self.assertLessEqual(decision["scale"], 1.16)
 
     def test_blink_candidate_is_rejected(self):
         result = plan(
@@ -79,6 +80,24 @@ class LitePlannerTests(unittest.TestCase):
         decision = result["decisions"][0]
         self.assertEqual(decision["start_ms"], 1200)
 
+    def test_4k_quality_cap_does_not_raise_artistic_zoom_cap(self):
+        data = payload(importance=1.0, face_ratio=0.20)
+        data["source"] = {"width": 2160, "height": 3840, "quality_cap": 1.60}
+        data["config"]["intensity"] = "dynamic"
+        result = plan(data)
+        decision = result["decisions"][0]
+        self.assertLessEqual(decision["scale"], 1.20)
+        self.assertLessEqual(decision["state_cap"], 1.20)
+
+    def test_argument_has_stricter_cap_than_emphasis(self):
+        data = payload(importance=0.60, face_ratio=0.20)
+        data["source"] = {"width": 2160, "height": 3840, "quality_cap": 1.60}
+        data["config"]["intensity"] = "dynamic"
+        result = plan(data)
+        decision = result["decisions"][0]
+        self.assertEqual(decision["desired_state"], "ARGUMENT")
+        self.assertLessEqual(decision["scale"], 1.12)
+
     def test_qc_rejects_non_hold_noop(self):
         bad = {
             "source": {"width": 1080, "height": 1920},
@@ -88,6 +107,7 @@ class LitePlannerTests(unittest.TestCase):
                     "start_ms": 0,
                     "end_ms": 1000,
                     "motion": "step",
+                    "state": "CONTEXT",
                     "crop_start": [0, 0, 1080, 1920],
                     "crop_end": [0, 0, 1080, 1920],
                 }
@@ -96,6 +116,49 @@ class LitePlannerTests(unittest.TestCase):
         report = check(bad)
         self.assertEqual(report["status"], "FAIL")
         self.assertTrue(any(item["check"] == "noop_zoom" for item in report["errors"]))
+
+    def test_qc_rejects_old_160x_emphasis_plan(self):
+        bad = {
+            "source": {"width": 2160, "height": 3840},
+            "config": {"absolute_zoom_cap": 1.20},
+            "decisions": [
+                {
+                    "status": "PLANNED",
+                    "start_ms": 0,
+                    "end_ms": 1000,
+                    "motion": "step",
+                    "state": "EMPHASIS",
+                    "scale": 1.60,
+                    "crop_start": [0, 0, 2160, 3840],
+                    "crop_end": [405, 720, 1350, 2400],
+                }
+            ],
+        }
+        report = check(bad)
+        self.assertEqual(report["status"], "FAIL")
+        checks = {item["check"] for item in report["errors"]}
+        self.assertIn("zoom_too_aggressive", checks)
+        self.assertIn("crop_scale_too_aggressive", checks)
+
+    def test_qc_rejects_old_133x_argument_plan(self):
+        bad = {
+            "source": {"width": 2160, "height": 3840},
+            "decisions": [
+                {
+                    "status": "PLANNED",
+                    "start_ms": 0,
+                    "end_ms": 1000,
+                    "motion": "step",
+                    "state": "ARGUMENT",
+                    "scale": 1.33,
+                    "crop_start": [0, 0, 2160, 3840],
+                    "crop_end": [268, 477, 1624, 2886],
+                }
+            ],
+        }
+        report = check(bad)
+        self.assertEqual(report["status"], "FAIL")
+        self.assertTrue(any(item["check"] == "zoom_too_aggressive" for item in report["errors"]))
 
 
 if __name__ == "__main__":
