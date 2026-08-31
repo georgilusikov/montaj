@@ -79,6 +79,7 @@ def materialize_framing_decision(
 
     pattern = transition.get("pattern")
     pattern_id = pattern.get("pattern_id") if isinstance(pattern, dict) else None
+    pattern_score = pattern.get("score") if isinstance(pattern, dict) else None
     limiting = tuple(selected_state.limiting_reasons)
 
     return FramingDecision(
@@ -94,9 +95,14 @@ def materialize_framing_decision(
         why=dict(transition.get("why") or {}),
         desired={
             "requested_state": transition.get("desired_state"),
+            "pattern_target_state": transition.get("pattern_target_state"),
             "selected_state": selected_state.state,
             "degraded": bool(transition.get("degraded", False)),
             "pattern_id": pattern_id,
+            "pattern_score": pattern_score,
+            "pattern_shaped": bool(transition.get("pattern_shaped", False)),
+            "pattern_elapsed_ms": int(transition.get("pattern_elapsed_ms", 0)),
+            "pattern_expired": bool(transition.get("pattern_expired", False)),
         },
         can={
             "feasible_range": (start_ms, feasible_end),
