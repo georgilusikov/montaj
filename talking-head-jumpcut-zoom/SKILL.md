@@ -1,324 +1,96 @@
 ---
 name: talking-head-jumpcut-zoom
-description: 'Автомонтаж вертикального talking-head видео: сначала strict speech cleanup удаляет длинные паузы и создаёт плотный jumpcut timeline, затем semantic zoom planner расставляет смысловые reframes/zooms. CONTEXT=1.00x, ARGUMENT≈1.10–1.12x, EMPHASIS≈1.16–1.20x. Triggers: "подрежь паузы и расставь зумы", "talking head jumpcut zoom", "автомонтаж reels/shorts", "semantic zoom".'
+description: 'Автомонтаж вертикальных talking-head видео (9:16, Shorts, Reels, TikTok) по архитектуре v1.7 Lite: normalizer → speech_cleanup.py (Phase 1 jumpcuts & SRT) → zoom_planner.py (Phase 2 semantic WHY, eye-anchor, ratchet pattern, tripod lock) → render_zoom.py (FFmpeg 60Hz cubic easing) → simple_qc.py. Triggers: "смонтируй говорящую голову", "talking head zoom", "сделай зумы как в рилс", "подрежь паузы и расставь зумы", "автомонтаж shorts", "v1.7 lite", "zoom_planner", "ratchet zoom".'
 ---
 
 # Talking-Head Jumpcut & Zoom Editor v1.7 Lite
 
-Это **маленький двухфазный skill**, а не монтажный framework.
+Компактный, production-ready стандарт и пайплайн автомонтажа вертикальных экспертных роликов (9:16) для социальных сетей (Shorts, Reels, TikTok).
 
-Главный закон:
-
-```text
-CONTENT / PACING first
-SEMANTIC FRAMING second
-```
-
-Зум не должен компенсировать необрезанные паузы.
-
-## 1. Canonical pipeline
+## 1. Архитектура ядра (2-Phase Pipeline)
 
 ```text
-normalized source
-  ↓
-Whisper word-level timings
-  ↓
-scripts/speech_cleanup.py
-  ↓
-cleanup_plan.json + dense.mp4 + output_words + content_cuts_ms
-  ↓
-perception + semantic analysis on dense timeline
-  ↓
-analysis.json
-  ↓
-scripts/zoom_planner.py
-  ↓
-zoom_plan.json
-  ↓
-scripts/render_zoom.py
-  ↓
-final.mp4
-  ↓
-scripts/simple_qc.py
+1. [Ingest Normalization] normalize_source.py (CFR 30fps, Rec.709 tonemap, rotation, Apple ColorSync tags)
+        ↓
+2. [Phase 1: Pacing]      speech_cleanup.py (вырезание пауз >500ms с паддингами +40/+60ms, dense.mp4, chunked SRT)
+        ↓ dense.mp4 + output_words + content_cuts_ms
+3. [Perception & CV]      frame_defects.py (EAR < 0.20 blink, MAR > 0.45 mouth, Laplacian blur, Farneback flow)
+        ↓ analysis.json
+4. [Phase 2: Semantics]   zoom_planner.py (WHY, Ratchet ladder, Eye-anchor slow_push, Tripod lock)
+        ↓ zoom_plan.json
+5. [Render & Master]      render_zoom.py (60Hz cubic easing sendcmd, -14 LUFS / TP -1.5 dBTP)
+        ↓ final.mp4
+6. [Deterministic QC]     simple_qc.py (проверка геометрии кропов, капов, no-op зумов)
 ```
-
-Subtitles are generated externally and are not part of camera cadence.
 
 ---
 
-## 2. Phase 1 — strict speech cleanup / jumpcuts
+## 2. Ключевые принципы и формулы
 
-Use `scripts/speech_cleanup.py` before zoom planning.
+### 1. Формулы отсева бракованных кадров (`frame_defects.py` / `sceneflow`)
+- **EAR (Eye Aspect Ratio) — детекция моргания:**
+  $$EAR = \frac{\|p_2 - p_6\| + \|p_3 - p_5\|}{2 \cdot \|p_1 - p_4\|}$$
+  *Правило:* Если $EAR < 0.20$, глаз закрыт или полуприкрыт. Склейка сдвигается на ближайший кадр с $EAR \ge 0.25$.
+- **MAR (Mouth Aspect Ratio) — нейтральность рта:**
+  $$MAR = \frac{\|m_2 - m_6\| + \|m_3 - m_5\|}{2 \cdot \|m_1 - m_4\|}$$
+  *Правило:* Если $MAR > 0.45$, рот неестественно перекошен или открыт посреди слога — склейка блокируется.
+- **Laplacian Variance — отсев смазанных кадров (Motion Blur):**
+  $$\text{Var}(\nabla^2 I) < \text{threshold (60.0)}$$
+  *Правило:* При резком повороте головы или смазе склейка блокируется.
+- **Farneback Optical Flow — стабильность позы:**
+  Замеряет вектор движения пикселей лица $\|v_{\text{face}}\| \le 2.0$ px/кадр. Склейка разрешается только в момент покоя головы.
 
-Purpose: remove dead air while preserving every spoken word.
+---
 
-### Default strict policy
+### 2. Паттерн «Лесенка» (Ratchet) для перечислений (`add-zooms`)
+Когда спикер говорит: *«Во-первых... Во-вторых... И самое главное...»*:
+Масштаб не скачет хаотично, а плавно повышает ставки:
+- **Пункт 1 (`ratchet_1`):** `1.08x` (ARGUMENT light)
+- **Пункт 2 (`ratchet_2`):** `1.16x` (ARGUMENT deep)
+- **Пункт 3 (`ratchet_3` / кульминация):** `1.20x` (EMPHASIS)
+- **Выдох / итог:** резкий сброс обратно в «дом» `1.00x` (`CONTEXT`).
 
-```text
-pause <= 500 ms        keep
-pause > 500 ms         reduce to ~180 ms
-head before first word ~120 ms
-tail after last word   ~350 ms
-audio edge fade        15 ms
-```
+---
 
-Do not remove fillers, repetitions, false starts or words in Lite `strict` mode.
+### 3. Формула удержания «якоря» глаз при `slow_push` (`add-zooms`)
+При медленном наплыве (slow_push на 2–4%) лицо не сползает вниз/вверх благодаря формуле смещения центра кропа:
+$$\Delta Y = (Y_{\text{eyes}} - Y_{\text{center}}) \cdot \left(1 - \frac{1}{\text{scale}}\right)$$
+*Результат:* Линия глаз спикера остаётся зафиксированной на оптической линии (верхняя треть, $\approx 30\%$ от верха), пока границы кадра мягко сужаются.
 
-Example input:
+---
 
-```json
-{
-  "source": {"duration_ms": 88000},
-  "config": {
-    "mode": "strict",
-    "cut_threshold_ms": 500,
-    "target_gap_ms": 180,
-    "head_pad_ms": 120,
-    "tail_pad_ms": 350,
-    "audio_fade_ms": 15
-  },
-  "words": [
-    {"text": "Nunca", "start_ms": 320, "end_ms": 610}
-  ]
-}
-```
+### 4. Принцип «Tripod Lock» (`clippyme`)
+Защита от «морской болезни» и плавания камеры:
+- Внутри одного сегмента (`hold`) координаты кропа $(X, Y)$ фиксируются намертво по медиане ключевых точек за весь сегмент.
+- Покадровый трекинг лица (Face Tracking) во время речи **запрещён**. Камера двигается только в момент дискретной `step`-склейки или детерминированного `slow_push`.
 
-Run plan only:
+---
+
+### 5. Акустическая безопасность и экспорт субтитров (Phase 1)
+- **Acoustic Padding:** $+40$ мс до слова (защита предвзрывных интервалов П, Б, Т, Д, К) и $+60$ мс после слова (защита формантных хвостов).
+- **Микро-кроссфейды:** 15 мс на аудио-стыках.
+- **Chunked SRT:** экспорт субтитров блоками по 1–3 слова по таймкодам `out_ms` с учётом Safe-Zone (нижние 350-420 px).
+
+---
+
+## 3. Схема вызова инструментов
 
 ```bash
-python scripts/speech_cleanup.py speech_input.json cleanup_plan.json
-```
+# 1. Нормализация исходника в CFR Rec.709
+python scripts/normalize_source.py raw_input.mov normalized.mp4 --fps 30
 
-Plan + render dense video:
-
-```bash
+# 2. Фаза 1: Очистка пауз, джампкаты и экспорт субтитров
 python scripts/speech_cleanup.py speech_input.json cleanup_plan.json \
   --input-video normalized.mp4 \
-  --output-video dense.mp4
+  --output-video dense.mp4 \
+  --export-srt captions.srt
+
+# 3. Фаза 2: Семантический расчет зумов
+python scripts/zoom_planner.py analysis_input.json zoom_plan.json
+
+# 4. Проверка качества
+python scripts/simple_qc.py zoom_plan.json
+
+# 5. Финальный рендер
+python scripts/render_zoom.py dense.mp4 zoom_plan.json final_master.mp4
 ```
-
-`cleanup_plan.json` provides:
-
-- `kept_segments`: source→output mapping;
-- `content_cuts_ms`: jumpcuts on dense output timeline;
-- `removed_gaps`: audit of removed silence;
-- `output_words`: original words remapped to dense output time.
-
-**All later semantic/framing decisions use the dense output timeline.** Do not mix source timestamps with dense output timestamps.
-
----
-
-## 3. Phase 2 — semantic framing
-
-Core logic:
-
-```text
-WHY → CAN → WHEN → MOTION → DURATION → RETURN
-```
-
-### WHY
-
-Zoom reason comes from meaning, not cadence, gaze or head movement.
-
-Importance defaults:
-
-```text
-< 0.40        CONTEXT
-0.40–0.84     ARGUMENT
->= 0.85       EMPHASIS
-```
-
-Directions:
-
-- `build` — tension rises;
-- `peak` — strongest justified beat;
-- `release` — return home;
-- `neutral` — hold.
-
-Useful semantic triggers: antithesis, change of subject, warning, key number/rule, quote/axiom, conclusion, punchline.
-
-Do not implement language keywords as Python rules. The semantic layer decides WHY.
-
-### CAN / framing states
-
-Default moderate visual grammar:
-
-```text
-CONTEXT    = 1.00x exact source frame
-ARGUMENT   = ~1.10–1.12x
-EMPHASIS   = ~1.16x, dynamic may reach 1.20x
-```
-
-Actual crop is computed from source composition and temporal geometry. If a state is unsafe or visually redundant, downgrade/collapse it.
-
-Hard artistic cap: `1.20x` even if 4K quality would allow more.
-
-### WHEN
-
-Reject transition points with:
-
-- blink / long eye closure;
-- blur;
-- strong unsafe head turn / pose;
-- hard gesture or prop conflict;
-- unsafe crop geometry.
-
-Prefer:
-
-- semantic/clause boundary;
-- word boundary;
-- pause;
-- head return;
-- good camera rhythm.
-
-Gaze/head return may improve WHEN but never create WHY.
-
----
-
-## 4. Motion language
-
-### Default semantic punch = step/reframe
-
-```text
-1.00 → 1.12 → 1.00
-```
-
-Normal ARGUMENT and EMPHASIS use a clean discrete reframe on a safe semantic boundary.
-
-### Rare gradual build
-
-Slow push is not automatic.
-
-The semantic event must explicitly request:
-
-```json
-{"direction":"build", "motion_hint":"slow_push"}
-```
-
-Typical moderate build:
-
-```text
-1.00 ── 1.5–3.0 s ──→ ~1.05
-```
-
-It may then escalate to a real ARGUMENT/EMPHASIS punch.
-
-Slow push rendering uses dense 60 Hz easing. Do not use the old 10 Hz stair-step interpolation.
-
----
-
-## 5. Zoom episode duration
-
-Close framing is a temporary semantic episode, not a persistent state.
-
-```text
-micro_punch     0.8–1.4 s
-beat            1.5–2.4 s
-argument_hold   2.5–3.5 s
-```
-
-Infer from semantic-clause duration unless explicitly supplied.
-
-After ARGUMENT/EMPHASIS, normally return to CONTEXT 1.00x.
-
-Closely connected `build → peak` may stay close instead of flashing back to base for one frame.
-
-Duration bands are guidance. Do not deliberately auto-return in the middle of an unsafe gesture if a nearby safe clause/pose boundary exists.
-
----
-
-## 6. Visual cadence: 2–5 seconds
-
-Target:
-
-```text
-some meaningful visual refresh roughly every 2–5 s
-```
-
-But:
-
-```text
-visual refresh ≠ zoom
-```
-
-Primary cadence source is Phase 1 jumpcuts.
-
-`zoom_planner.py` receives `content_cuts_ms` from cleanup. It combines those cuts with semantic framing changes.
-
-If a >5 s visual gap remains, planner emits `cadence_requests`:
-
-```json
-{
-  "preferred_action": "jumpcut_same_scale",
-  "fallback_action": "hold_if_no_safe_cut",
-  "semantic_trigger": false,
-  "why": "visual_refresh_gap"
-}
-```
-
-These are content-cut requests, **not camera motions**.
-
-Do not manufacture an ambient `1.00 ↔ 1.05` breathing loop. That watchdog is removed.
-
----
-
-## 7. Renderer contract
-
-`render_zoom.py` receives the already-dense video produced by Phase 1.
-
-It executes only:
-
-- semantic `decisions`;
-- explicit `returns` to CONTEXT.
-
-It does not re-solve crop geometry and does not convert cadence requests into fake zooms.
-
-Canonical crop coordinates come from the planner.
-
----
-
-## 8. QC Lite
-
-Before accepting output verify:
-
-1. speech cleanup did not delete spoken words;
-2. `kept_segments` are contiguous on output timeline;
-3. `output_words` remain ordered;
-4. content cuts are on dense output time;
-5. crop remains inside source;
-6. CONTEXT is exact 1.00x source frame;
-7. ARGUMENT/EMPHASIS respect caps;
-8. non-hold motion changes crop;
-9. strong crop does not cut face/hair/critical gesture;
-10. cadence requests remain non-semantic.
-
-If post-render review reveals long silent stretches, fix Phase 1 first. Do not increase zoom count to hide dead air.
-
----
-
-## 9. Definition of done
-
-A correct Lite edit has this order:
-
-```text
-raw/normalized video
-→ strict pause cleanup
-→ dense jumpcut video
-→ semantic analysis
-→ semantic zoom episodes
-→ render
-→ QC
-```
-
-Expected visual language:
-
-```text
-1.00 = home / air
-~1.12 = common semantic punch
-~1.16–1.20 = rare climax
-rare ~1.05 slow build = gradual tension
-```
-
-The result should feel rhythmically alive because **content cuts carry pacing and zoom carries meaning**.
-
-For implementation details and JSON contracts, see `V1_7_LITE.md`.
