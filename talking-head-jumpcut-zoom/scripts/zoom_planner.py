@@ -12,6 +12,7 @@ STATE_CAP = {"CONTEXT": 1.00, "ARGUMENT": 1.12, "EMPHASIS": 1.20}
 ABSOLUTE_ZOOM_CAP = 1.20
 STYLE_CAP = {"calm": 1.10, "moderate": 1.16, "dynamic": 1.20}
 MIN_STEP = {"calm": 0.04, "moderate": 0.06, "dynamic": 0.06}
+UPPER_STATE_MIN_STEP = 0.03
 MIN_DWELL_MS = {"calm": 2000, "moderate": 1500, "dynamic": 1200}
 
 # Meaning creates zooms. Cadence only helps choose boundaries and asks the separate
@@ -215,11 +216,12 @@ def _candidate_states(
             distinct.append(candidate)
             continue
         delta = abs(candidate["scale"] / distinct[-1]["scale"] - 1.0)
-        if delta >= MIN_STEP[intensity]:
+        upper_pair = candidate["state"] == "EMPHASIS" and distinct[-1]["state"] == "ARGUMENT"
+        threshold = UPPER_STATE_MIN_STEP if upper_pair else MIN_STEP[intensity]
+        if delta >= threshold:
             distinct.append(candidate)
-        elif candidate["state"] == "EMPHASIS" and distinct[-1]["state"] == "ARGUMENT":
-            if len(distinct) == 1 or abs(candidate["scale"] / distinct[-2]["scale"] - 1.0) >= MIN_STEP[intensity]:
-                distinct[-1] = candidate
+        # If ARGUMENT and EMPHASIS are genuinely indistinguishable, keep ARGUMENT.
+        # It is the common working accent; rare EMPHASIS may safely downgrade to it.
     return distinct
 
 
