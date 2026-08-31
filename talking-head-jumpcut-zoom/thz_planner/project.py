@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .assembler import materialize_framing_decision
+from .coverage import synthesize_source_base_coverage
 from .planner import plan_geometry_core
 from .schema import FrameObservation, QualityMetrics, ShotState, sha256_canonical
 from .semantic_bridge import plan_transition_from_semantic_context
@@ -110,6 +111,14 @@ def plan_project(payload: dict[str, Any]) -> dict[str, Any]:
         current_scale = float(decision.derived.get("motion_end_scale", current_scale))
 
     content_edits = _content_edits(list(payload.get("content_edits") or []))
+    framing = list(
+        synthesize_source_base_coverage(
+            content_edits=content_edits,
+            framing_decisions=framing,
+            observations=observations,
+            quality=quality,
+        )
+    )
     manifest = build_timeline_manifest(
         analysis_hash=str(geometry["analysis_hash"]),
         config_hash=str(geometry["config_hash"]),
@@ -119,6 +128,7 @@ def plan_project(payload: dict[str, Any]) -> dict[str, Any]:
         extra_provenance={
             "planner_input_hash": sha256_canonical(payload),
             "geometry_output_hash": geometry["output_hash"],
+            "framing_coverage_policy": "explicit_source_base_v1",
         },
     )
     validation = validate_manifest_pre_render(manifest, quality=quality)
