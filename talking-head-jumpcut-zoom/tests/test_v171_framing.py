@@ -2,9 +2,11 @@ import unittest
 
 from thz_planner import (
     canonical_crop_at,
+    canonical_crop_for_window,
     canonical_crop_pair,
     feasible_ranges,
     plan_geometry_core,
+    solve_normalized_window_crop,
     state_is_feasible,
 )
 from thz_planner.schema import FrameObservation, QualityMetrics, ShotState
@@ -60,7 +62,6 @@ class CanonicalFramingTests(unittest.TestCase):
         )
         self.assertGreaterEqual(start.y, 0)
         self.assertGreaterEqual(end.y, 0)
-        # Lower hair_top in the second observation constrains both endpoints.
         local_only = canonical_crop_at(
             observation=rows[0],
             metrics=metrics,
@@ -68,6 +69,36 @@ class CanonicalFramingTests(unittest.TestCase):
             segment_hair_top=rows[0].hair_top,
         )
         self.assertLessEqual(start.y, local_only.y)
+
+    def test_window_crop_uses_one_anchor_for_moving_face(self):
+        metrics = QualityMetrics(1080, 1920)
+        rows = [
+            FrameObservation(0, 0.28, 0.46, 0.34, 0.15, 0.72),
+            FrameObservation(250, 0.28, 0.50, 0.34, 0.15, 0.72),
+            FrameObservation(500, 0.28, 0.54, 0.34, 0.15, 0.72),
+        ]
+        normalized, reasons = solve_normalized_window_crop(rows, 1.10)
+        self.assertEqual(reasons, ())
+        crop = canonical_crop_for_window(observations=rows, metrics=metrics, scale=1.10)
+        self.assertEqual(crop.x % 2, 0)
+        self.assertAlmostEqual(crop.x / metrics.width, normalized[0], delta=0.003)
+
+    def test_excessive_subject_travel_makes_tight_state_infeasible(self):
+        rows = [
+            FrameObservation(0, 0.30, 0.34, 0.34, 0.15, 0.72),
+            FrameObservation(250, 0.30, 0.66, 0.34, 0.15, 0.72),
+        ]
+        result = plan_geometry_core(
+            observations=rows,
+            quality=QualityMetrics(1080, 1920),
+            intensity="dynamic",
+            pace="neutral",
+            window_ms=500,
+        )
+        self.assertFalse(state_is_feasible(result, ShotState.EMPHASIS, 100))
+        intervals = result["windows"][0]["intervals"]
+        emphasis = next(item for item in intervals if item.state is ShotState.EMPHASIS)
+        self.assertIn("x_window_no_solution", emphasis.hard_reasons)
 
 
 class TemporalQueryTests(unittest.TestCase):
