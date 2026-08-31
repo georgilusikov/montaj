@@ -45,3 +45,8 @@ jobs:
         run: |
           ffmpeg -version | head -n 1
           python tests/ffmpeg_smoke.py
+      - name: FFmpeg jumpcut timeline smoke
+        working-directory: talking-head-jumpcut-zoom
+        env:
+          PYTHONPATH: .
+        run: python tests/ffmpeg_timeline_smoke.py
