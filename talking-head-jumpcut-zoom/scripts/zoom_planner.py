@@ -129,11 +129,30 @@ def _samples(observations: list[dict[str, Any]], center_ms: int, window_ms: int)
     return [min(observations, key=lambda o: abs(int(o["t_ms"]) - center_ms))]
 
 
+def _get_global_anchor(observations: list[dict[str, Any]]) -> tuple[float, float, float]:
+    """
+    Compute robust global optical center (cx, cy, eye_y) across entire video.
+    Filters out spurious false-positive detections (e.g. hands/watch/lapels in lower half).
+    """
+    if not observations:
+        return 0.50, 0.34, 0.29
+    valid = [
+        o for o in observations
+        if 0.15 <= float(o.get("face_cy", 0.35)) <= 0.55 and 0.30 <= float(o.get("face_cx", 0.50)) <= 0.70
+    ]
+    pool = valid if valid else observations
+    cx = median(float(o.get("face_cx", 0.50)) for o in pool)
+    cy = median(float(o.get("face_cy", 0.34)) for o in pool)
+    eye_y = median(float(o.get("eye_line_y", cy - 0.05)) for o in pool)
+    return cx, cy, eye_y
+
+
 def _crop_for_scale_with_anchor(
     rows: list[dict[str, Any]],
     width: int,
     height: int,
     scale: float,
+    global_anchor: tuple[float, float, float] | None = None,
 ) -> tuple[int, int, int, int]:
     """
     Calculate crop (x, y, w, h) using Tripod Lock and Eye-Anchor formula:
@@ -145,12 +164,14 @@ def _crop_for_scale_with_anchor(
     crop_w = _even(width / scale)
     crop_h = _even(height / scale)
 
-    # Tripod Lock: Median landmarks across window
-    cx = median(float(o.get("face_cx", 0.5)) for o in rows)
-    cy = median(float(o.get("face_cy", 0.34)) for o in rows)
+    if global_anchor is not None:
+        cx, cy, y_eyes_norm = global_anchor
+    else:
+        # Tripod Lock: Median landmarks across window
+        cx = median(float(o.get("face_cx", 0.5)) for o in rows)
+        cy = median(float(o.get("face_cy", 0.34)) for o in rows)
+        y_eyes_norm = median(float(o.get("eye_line_y", cy - 0.05)) for o in rows)
 
-    # Detected eye line Y or fallback to face cy - 0.05
-    y_eyes_norm = median(float(o.get("eye_line_y", cy - 0.05)) for o in rows)
     y_eyes_px = y_eyes_norm * height
     y_center_px = 0.50 * height
 
@@ -231,6 +252,7 @@ def _candidate_states(
     quality_cap: float,
     absolute_cap: float,
     state_caps: dict[str, float],
+    global_anchor: tuple[float, float, float] | None = None,
 ) -> list[dict[str, Any]]:
     face_base = median(max(1e-6, float(o.get("face_ratio", 0.0))) for o in rows)
     candidates: list[dict[str, Any]] = []
@@ -238,7 +260,7 @@ def _candidate_states(
         desired_scale = max(1.0, STATE_TARGET[state] / face_base)
         effective_cap = min(quality_cap, STYLE_CAP[intensity], absolute_cap, float(state_caps[state]))
         scale = min(desired_scale, effective_cap)
-        crop = _crop_for_scale_with_anchor(rows, width, height, scale)
+        crop = _crop_for_scale_with_anchor(rows, width, height, scale, global_anchor=global_anchor)
         safe, _ = _crop_safe(rows, crop, width, height, scale)
         if safe:
             candidates.append(
@@ -280,13 +302,14 @@ def _soft_build_state(
     width: int,
     height: int,
     intensity: str,
+    global_anchor: tuple[float, float, float] | None = None,
 ) -> dict[str, Any]:
     if selected["state"] != "ARGUMENT":
         return selected
     scale = min(float(selected["scale"]), SOFT_BUILD_SCALE[intensity])
     if scale <= 1.000001:
         return selected
-    crop = _crop_for_scale_with_anchor(rows, width, height, scale)
+    crop = _crop_for_scale_with_anchor(rows, width, height, scale, global_anchor=global_anchor)
     safe, _ = _crop_safe(rows, crop, width, height, scale)
     if not safe:
         return selected
@@ -308,13 +331,14 @@ def _ratchet_state(
     intensity: str,
     quality_cap: float,
     absolute_cap: float,
+    global_anchor: tuple[float, float, float] | None = None,
 ) -> dict[str, Any]:
     """
     Apply ratchet escalation scale (1.08 -> 1.16 -> 1.20) for lists/arguments.
     """
     target_scale = RATCHET_LEVELS.get(direction.upper(), float(selected["scale"]))
     effective_scale = min(target_scale, quality_cap, STYLE_CAP[intensity], absolute_cap)
-    crop = _crop_for_scale_with_anchor(rows, width, height, effective_scale)
+    crop = _crop_for_scale_with_anchor(rows, width, height, effective_scale, global_anchor=global_anchor)
     safe, _ = _crop_safe(rows, crop, width, height, effective_scale)
     if not safe:
         return selected
@@ -487,6 +511,8 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
     events = sorted(list(payload.get("semantic_events") or []), key=lambda e: (int(e["t_ms"]), str(e.get("id", ""))))
     content_cuts_ms = sorted(int(v) for v in (payload.get("content_cuts_ms") or []))
 
+    global_anchor = _get_global_anchor(observations)
+
     current_state = "CONTEXT"
     current_crop = [0, 0, width, height]
     last_change_ms: int | None = None
@@ -518,6 +544,7 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
             quality_cap=quality_cap,
             absolute_cap=absolute_cap,
             state_caps=state_caps,
+            global_anchor=global_anchor,
         )
         selected = _choose_state(states, desired)
         if selected is None:
@@ -532,12 +559,13 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
         motion_hint = raw_hint if raw_hint in MOTION_HINTS else "AUTO"
         gradual_build = direction == "build" and current_state == "CONTEXT" and motion_hint == "SLOW_PUSH"
         if gradual_build:
-            selected = _soft_build_state(selected, rows, width=width, height=height, intensity=intensity)
+            selected = _soft_build_state(selected, rows, width=width, height=height, intensity=intensity, global_anchor=global_anchor)
         elif direction.startswith("ratchet_"):
             selected = _ratchet_state(
                 direction, selected, rows,
                 width=width, height=height, intensity=intensity,
                 quality_cap=quality_cap, absolute_cap=absolute_cap,
+                global_anchor=global_anchor,
             )
 
         target_crop = list(selected["crop"])
@@ -573,10 +601,6 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
         if target_crop == current_crop:
             motion = "hold"
         elif motion_hint == "SLOW_PUSH":
-            motion = "slow_push"
-        elif motion_hint == "STEP":
-            motion = "step"
-        elif scale_delta < MIN_STEP[intensity] and importance >= EMPHASIS_IMPORTANCE:
             motion = "slow_push"
         else:
             motion = "step"
