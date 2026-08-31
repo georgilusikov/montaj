@@ -22,6 +22,7 @@ from .global_policy import (
     outro_breath_policy,
     state_balance_report,
 )
+from .manifest_io import manifest_from_planner_output, parse_timeline_manifest, verify_serialized_manifest_hash
 from .motion import MotionPlan, ambient_drift, fit_motion_duration, plan_motion
 from .planner import DEFAULT_BANDS, PLANNER_VERSION, plan_geometry_core, render_geometry_result
 from .schema import SCHEMA_VERSION, ShotState
@@ -54,9 +55,11 @@ __all__ = [
     "feasible_ranges",
     "fit_motion_duration",
     "home_return_report",
+    "manifest_from_planner_output",
     "materialize_framing_decision",
     "outro_breath_policy",
     "output_coverage_gaps",
+    "parse_timeline_manifest",
     "plan_geometry_core",
     "plan_motion",
     "plan_transition_intent",
@@ -71,5 +74,6 @@ __all__ = [
     "synthesize_source_base_coverage",
     "validate_framing_decision",
     "validate_manifest_pre_render",
+    "verify_serialized_manifest_hash",
     "window_at",
 ]
