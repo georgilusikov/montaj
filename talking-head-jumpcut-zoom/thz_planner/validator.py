@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from typing import Any, Iterable
+from typing import Any
 
 from .coverage import output_coverage_gaps
 from .framing import derived_scale
+from .global_policy import home_return_report, state_balance_report
 from .schema import FramingDecision, QualityMetrics, RenderPrimitive
 from .timeline import ContentEdit, validate_content_edits
 
@@ -41,15 +42,14 @@ def validate_manifest_pre_render(
     *,
     quality: QualityMetrics,
     require_full_coverage: bool = True,
+    pace: str | None = None,
 ) -> dict[str, object]:
     content: tuple[ContentEdit, ...] = validate_content_edits(manifest.get("content_edits", ()))
-    framing: Iterable[FramingDecision] = manifest.get("framing_decisions", ())
-    count = 0
+    framing: tuple[FramingDecision, ...] = tuple(manifest.get("framing_decisions", ()))
     for decision in framing:
         validate_framing_decision(decision, quality)
         if decision.time_basis != "output":
             raise ValueError("renderer manifest framing must use output time basis")
-        count += 1
 
     gaps = output_coverage_gaps(manifest)
     if require_full_coverage and gaps:
@@ -59,10 +59,21 @@ def validate_manifest_pre_render(
         )
         raise ValueError(f"renderer framing coverage gaps: {compact}")
 
+    home_violations = home_return_report(framing)
+    if home_violations:
+        first = home_violations[0]
+        raise ValueError(
+            "HOME_RETURN global safety max exceeded: "
+            f"{first.start_ms}-{first.end_ms} ({first.duration_ms}ms)"
+        )
+
+    balance = state_balance_report(framing, pace=pace) if pace is not None else None
     return {
         "status": "PASS",
         "content_edit_count": len(content),
-        "framing_decision_count": count,
+        "framing_decision_count": len(framing),
         "coverage_gap_count": len(gaps),
         "framing_coverage": 1.0 if not gaps else 0.0,
+        "home_return_violation_count": len(home_violations),
+        "state_balance": balance,
     }
