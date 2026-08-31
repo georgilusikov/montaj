@@ -67,10 +67,10 @@ class LitePlannerTests(unittest.TestCase):
         self.assertEqual(decision["available_states"], ["CONTEXT"])
         self.assertEqual(decision["state"], "CONTEXT")
 
-    def test_redundant_argument_can_collapse_to_context_emphasis(self):
+    def test_moderate_keeps_argument_and_emphasis_as_distinct_working_states(self):
         result = plan(payload(importance=1.0, face_ratio=0.30))
         decision = result["decisions"][0]
-        self.assertEqual(decision["available_states"], ["CONTEXT", "EMPHASIS"])
+        self.assertEqual(decision["available_states"], ["CONTEXT", "ARGUMENT", "EMPHASIS"])
         self.assertEqual(decision["state"], "EMPHASIS")
         self.assertLessEqual(decision["scale"], 1.16)
 
