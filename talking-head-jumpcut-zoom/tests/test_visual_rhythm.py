@@ -55,7 +55,7 @@ class VisualRhythmTests(unittest.TestCase):
         self.assertEqual(decision["state"], "ARGUMENT")
         self.assertFalse(decision["soft_build"])
         self.assertEqual(decision["motion"], "step")
-        self.assertAlmostEqual(decision["scale"], 1.12, places=2)
+        self.assertAlmostEqual(decision["scale"], 1.08, places=2)
 
     def test_explicit_gradual_build_uses_soft_slow_push(self):
         result = plan(payload([

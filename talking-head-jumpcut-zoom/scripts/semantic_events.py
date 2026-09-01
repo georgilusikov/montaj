@@ -2,12 +2,17 @@
 """
 Build planner-ready semantic_events from dense output words plus agent/LLM semantic marks.
 
-The agent owns WHY only:
+The agent owns WHY, while performance may only amplify an already semantic mark:
 - which span matters;
-- importance;
+- semantic importance;
 - direction;
+- optional performance_emphasis + evidence;
 - optional motion hint / zoom duration type;
 - concise reason.
+
+Performance never creates a semantic event and never promotes semantic importance <0.40.
+The bonus is deliberately small (max +0.08) so HOW can strengthen WHAT without
+reintroducing gaze/timer-driven zoom generation.
 
 This module deterministically owns timing:
 - maps word indices to dense timeline milliseconds;
@@ -22,6 +27,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+VERSION = "1.7.5-lite"
 VALID_DIRECTIONS = {
     "build", "peak", "release", "neutral",
     "ratchet_1", "ratchet_2", "ratchet_3",
@@ -30,6 +36,8 @@ VALID_MOTION_HINTS = {"auto", "step", "slow_push"}
 VALID_DURATION_TYPES = {"micro_punch", "beat", "argument_hold"}
 DEFAULT_REQUIRE_AFTER_MS = 8000
 DEFAULT_BOUNDARY_RADIUS_WORDS = 2
+PERFORMANCE_BONUS_MAX = 0.08
+PERFORMANCE_SEMANTIC_FLOOR = 0.40
 
 
 def _validate_words(raw_words: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -105,6 +113,22 @@ def _boundary_candidates(
     return result
 
 
+def _performance_adjusted_importance(mark: dict[str, Any], semantic_importance: float, event_id: str) -> tuple[float, float, float, str]:
+    performance = float(mark.get("performance_emphasis", 0.0) or 0.0)
+    if not 0.0 <= performance <= 1.0:
+        raise ValueError(f"{event_id}: performance_emphasis must be within 0..1")
+    evidence = str(mark.get("performance_evidence") or "").strip()
+    if performance > 0.0 and not evidence:
+        raise ValueError(f"{event_id}: performance_evidence is required when performance_emphasis > 0")
+
+    bonus = 0.0
+    if semantic_importance >= PERFORMANCE_SEMANTIC_FLOOR:
+        # Only the upper half of performance intensity matters. Max bonus +0.08.
+        bonus = min(PERFORMANCE_BONUS_MAX, max(0.0, performance - 0.50) * 0.16)
+    effective = min(1.0, semantic_importance + bonus)
+    return effective, performance, bonus, evidence
+
+
 def build_events(payload: dict[str, Any]) -> dict[str, Any]:
     words = _validate_words(list(payload.get("words") or []))
     marks = list(payload.get("semantic_marks") or [])
@@ -137,9 +161,12 @@ def build_events(payload: dict[str, Any]) -> dict[str, Any]:
         if not (start_word <= end_word < len(words)):
             raise ValueError(f"{event_id}: end_word out of range: {end_word}")
 
-        importance = float(mark.get("importance", 0.0))
-        if not 0.0 <= importance <= 1.0:
+        semantic_importance = float(mark.get("importance", 0.0))
+        if not 0.0 <= semantic_importance <= 1.0:
             raise ValueError(f"{event_id}: importance must be within 0..1")
+        importance, performance, performance_bonus, performance_evidence = _performance_adjusted_importance(
+            mark, semantic_importance, event_id
+        )
 
         direction = str(mark.get("direction") or "").strip().lower()
         if direction and direction not in VALID_DIRECTIONS:
@@ -162,10 +189,11 @@ def build_events(payload: dict[str, Any]) -> dict[str, Any]:
             "t_ms": int(words[start_word]["start_ms"]),
             "end_ms": int(words[end_word]["end_ms"]),
             "importance": importance,
-            "boundary_candidates": _boundary_candidates(
-                words, start_word, radius_words=radius_words
-            ),
-            "semantic_source": "agent_mark_v1",
+            "semantic_importance": semantic_importance,
+            "performance_emphasis": performance,
+            "performance_bonus": round(performance_bonus, 4),
+            "boundary_candidates": _boundary_candidates(words, start_word, radius_words=radius_words),
+            "semantic_source": "agent_mark_v1.7.5",
             "semantic_span": {
                 "start_word": start_word,
                 "end_word": end_word,
@@ -173,6 +201,8 @@ def build_events(payload: dict[str, Any]) -> dict[str, Any]:
             },
             "semantic_why": why,
         }
+        if performance_evidence:
+            event["performance_evidence"] = performance_evidence
         if direction:
             event["direction"] = direction
         if motion_hint != "auto":
@@ -185,7 +215,7 @@ def build_events(payload: dict[str, Any]) -> dict[str, Any]:
 
     events.sort(key=lambda e: (int(e["t_ms"]), str(e["id"])))
     return {
-        "version": "1.7.1-lite",
+        "version": VERSION,
         "word_count": len(words),
         "spoken_span_ms": span_ms,
         "semantic_event_count": len(events),

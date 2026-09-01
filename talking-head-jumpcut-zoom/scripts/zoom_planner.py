@@ -5,7 +5,8 @@ Montaj v1.7 Lite Semantic Zoom Planner with:
 2. WHY (semantic importance + direction + ratchet escalation).
 3. Eye-line anchor formula for slow_push: Delta_Y = (Y_eyes - Y_center) * (1 - 1/scale).
 4. Tripod Lock: Segment-wide median crop lock (no per-frame drift).
-5. Strict defect filtering (EAR blink, MAR mouth distortion, Laplacian blur, Farneback velocity).
+5. Segment-wide headroom: preserve >=5% air above the highest hair point.
+6. Strict defect filtering (EAR blink, MAR mouth distortion, Laplacian blur, Farneback velocity).
 """
 from __future__ import annotations
 
@@ -17,10 +18,10 @@ from statistics import median
 from typing import Any
 
 STATE_TARGET = {"CONTEXT": 0.30, "ARGUMENT": 0.35, "EMPHASIS": 0.41}
-STATE_CAP = {"CONTEXT": 1.00, "ARGUMENT": 1.12, "EMPHASIS": 1.20}
-ABSOLUTE_ZOOM_CAP = 1.20
-STYLE_CAP = {"calm": 1.10, "moderate": 1.16, "dynamic": 1.20}
-MIN_STEP = {"calm": 0.04, "moderate": 0.06, "dynamic": 0.06}
+STATE_CAP = {"CONTEXT": 1.00, "ARGUMENT": 1.08, "EMPHASIS": 1.12}
+ABSOLUTE_ZOOM_CAP = 1.13
+STYLE_CAP = {"calm": 1.10, "moderate": 1.12, "dynamic": 1.13}
+MIN_STEP = {"calm": 0.04, "moderate": 0.035, "dynamic": 0.04}
 MIN_DWELL_MS = {"calm": 2000, "moderate": 1500, "dynamic": 1200}
 
 PREFERRED_CHANGE_MS = {"calm": 3000, "moderate": 2500, "dynamic": 2200}
@@ -30,26 +31,29 @@ VISUAL_REFRESH_TARGET_MS = {"calm": 4000, "moderate": 3500, "dynamic": 3000}
 VISUAL_REFRESH_MAX_MS = {"calm": 5500, "moderate": 5000, "dynamic": 4500}
 CADENCE_REQUEST_HALF_WINDOW_MS = 750
 
-# Ratchet (Лесенка) progression levels for listing/arguments
+# Ratchet escalation stays restrained. RATCHET_3 is the only path above normal
+# EMPHASIS and is still bounded by the global artistic 1.13x cap.
 RATCHET_LEVELS = {
     "RATCHET_1": 1.08,
-    "RATCHET_2": 1.16,
-    "RATCHET_3": 1.20,
+    "RATCHET_2": 1.12,
+    "RATCHET_3": 1.13,
 }
 
 SOFT_BUILD_SCALE = {"calm": 1.03, "moderate": 1.05, "dynamic": 1.06}
 SOFT_BUILD_PUSH_MS = {"calm": 2800, "moderate": 2400, "dynamic": 2000}
 
 ZOOM_DURATION_BANDS_MS = {
-    "micro_punch": (800, 1400, 1100),
-    "beat": (1500, 2400, 2000),
-    "argument_hold": (2500, 3500, 3000),
+    "micro_punch": (500, 1200, 800),
+    "beat": (1200, 2000, 1600),
+    "argument_hold": (2000, 2500, 2200),
 }
 CONTINUATION_GRACE_MS = 500
 STRONG_PEAK_MIN_DWELL_MS = 800
 STRONG_PEAK_IMPORTANCE = 0.92
 EMPHASIS_IMPORTANCE = 0.85
 FACE_EDGE_MARGIN = 0.035
+MIN_HEADROOM_RATIO = 0.05
+HEADROOM_TOLERANCE = 0.002
 STATE_LEVEL = {"CONTEXT": 0, "ARGUMENT": 1, "EMPHASIS": 2}
 SEMANTIC_DIRECTIONS = {"BUILD", "PEAK", "RELEASE", "NEUTRAL", "RATCHET_1", "RATCHET_2", "RATCHET_3"}
 MOTION_HINTS = {"AUTO", "STEP", "SLOW_PUSH"}
@@ -129,6 +133,19 @@ def _samples(observations: list[dict[str, Any]], center_ms: int, window_ms: int)
     return [min(observations, key=lambda o: abs(int(o["t_ms"]) - center_ms))]
 
 
+def _segment_samples(
+    observations: list[dict[str, Any]],
+    start_ms: int,
+    end_ms: int,
+    fallback_window_ms: int,
+) -> list[dict[str, Any]]:
+    """Samples the whole anticipated framing episode so headroom is segment-wide."""
+    lo = min(int(start_ms), int(end_ms))
+    hi = max(int(start_ms), int(end_ms))
+    rows = [o for o in observations if lo <= int(o["t_ms"]) <= hi]
+    return rows or _samples(observations, int(start_ms), fallback_window_ms)
+
+
 def _get_global_anchor(observations: list[dict[str, Any]]) -> tuple[float, float, float]:
     """
     Compute robust global optical center (cx, cy, eye_y) across entire video.
@@ -155,8 +172,9 @@ def _crop_for_scale_with_anchor(
     global_anchor: tuple[float, float, float] | None = None,
 ) -> tuple[int, int, int, int]:
     """
-    Calculate crop (x, y, w, h) using Tripod Lock and Eye-Anchor formula:
-    Delta_Y = (Y_eyes - Y_center) * (1 - 1/scale)
+    Calculate crop using Tripod Lock + eye anchor, then restore the older segment-wide
+    headroom invariant: use the highest hair point across the whole shot and shift the
+    crop upward as needed to keep >=5% of the output crop above it.
     """
     if scale <= 1.000001:
         return 0, 0, width, height
@@ -167,7 +185,6 @@ def _crop_for_scale_with_anchor(
     if global_anchor is not None:
         cx, cy, y_eyes_norm = global_anchor
     else:
-        # Tripod Lock: Median landmarks across window
         cx = median(float(o.get("face_cx", 0.5)) for o in rows)
         cy = median(float(o.get("face_cy", 0.34)) for o in rows)
         y_eyes_norm = median(float(o.get("eye_line_y", cy - 0.05)) for o in rows)
@@ -177,9 +194,16 @@ def _crop_for_scale_with_anchor(
 
     # Eye Anchor Holding formula: Delta_Y = (Y_eyes - Y_center) * (1 - 1/scale)
     delta_y_anchor = (y_eyes_px - y_center_px) * (1.0 - 1.0 / scale)
-
-    # Base centered Y crop adjusted with eye anchor
     base_y = (height - crop_h) / 2.0 + delta_y_anchor
+
+    # Restored v1.x segment-wide headroom formula:
+    # hair_top_segment = min(hair_top[t])
+    # Y_crop = min(Y_default, hair_top_segment - 0.05 * crop_h)
+    hair_tops = [float(o["hair_top"]) for o in rows if o.get("hair_top") is not None]
+    if hair_tops:
+        hair_top_segment_px = min(hair_tops) * height
+        required_headroom_px = MIN_HEADROOM_RATIO * crop_h
+        base_y = min(base_y, hair_top_segment_px - required_headroom_px)
 
     x = _even(_clamp(cx * width - crop_w / 2, 0, width - crop_w), 0)
     y = _even(_clamp(base_y, 0, height - crop_h), 0)
@@ -196,6 +220,20 @@ def _face_box_px(row: dict[str, Any], width: int, height: int) -> tuple[float, f
     face_h = max(1.0, float(row.get("face_ratio", 0.0)) * height)
     face_w = 0.78 * face_h
     return cx - face_w / 2, cy - face_h / 2, cx + face_w / 2, cy + face_h / 2
+
+
+def _min_headroom_ratio(
+    rows: list[dict[str, Any]],
+    crop: tuple[int, int, int, int] | list[int],
+    height: int,
+) -> float | None:
+    _, y, _, crop_h = (int(v) for v in crop)
+    values = [
+        (float(row["hair_top"]) * height - y) / crop_h
+        for row in rows
+        if row.get("hair_top") is not None
+    ]
+    return min(values) if values else None
 
 
 def _crop_safe(
@@ -234,7 +272,7 @@ def _crop_safe(
         hair_top = row.get("hair_top")
         if hair_top is not None:
             hair_out = (float(hair_top) * height - y) / crop_h
-            if hair_out < 0.04:
+            if hair_out + HEADROOM_TOLERANCE < MIN_HEADROOM_RATIO:
                 reasons.append("headroom")
                 break
     return not reasons, reasons
@@ -263,6 +301,7 @@ def _candidate_states(
         crop = _crop_for_scale_with_anchor(rows, width, height, scale, global_anchor=global_anchor)
         safe, _ = _crop_safe(rows, crop, width, height, scale)
         if safe:
+            headroom_ratio = _min_headroom_ratio(rows, crop, height)
             candidates.append(
                 {
                     "state": state,
@@ -272,6 +311,7 @@ def _candidate_states(
                     "desired_scale": round(desired_scale, 4),
                     "effective_cap": round(effective_cap, 4),
                     "limited": scale + 1e-6 < desired_scale,
+                    "headroom_ratio": round(headroom_ratio, 4) if headroom_ratio is not None else None,
                 }
             )
 
@@ -317,6 +357,8 @@ def _soft_build_state(
     result["scale"] = round(scale, 4)
     result["crop"] = list(crop)
     result["face_ratio"] = round(median(float(o.get("face_ratio", 0.0)) for o in rows) * scale, 4)
+    headroom_ratio = _min_headroom_ratio(rows, crop, height)
+    result["headroom_ratio"] = round(headroom_ratio, 4) if headroom_ratio is not None else None
     result["soft_build"] = True
     return result
 
@@ -333,9 +375,7 @@ def _ratchet_state(
     absolute_cap: float,
     global_anchor: tuple[float, float, float] | None = None,
 ) -> dict[str, Any]:
-    """
-    Apply ratchet escalation scale (1.08 -> 1.16 -> 1.20) for lists/arguments.
-    """
+    """Apply restrained ratchet escalation: 1.08 -> 1.12 -> max 1.13."""
     target_scale = RATCHET_LEVELS.get(direction.upper(), float(selected["scale"]))
     effective_scale = min(target_scale, quality_cap, STYLE_CAP[intensity], absolute_cap)
     crop = _crop_for_scale_with_anchor(rows, width, height, effective_scale, global_anchor=global_anchor)
@@ -346,6 +386,8 @@ def _ratchet_state(
     result["scale"] = round(effective_scale, 4)
     result["crop"] = list(crop)
     result["face_ratio"] = round(median(float(o.get("face_ratio", 0.0)) for o in rows) * effective_scale, 4)
+    headroom_ratio = _min_headroom_ratio(rows, crop, height)
+    result["headroom_ratio"] = round(headroom_ratio, 4) if headroom_ratio is not None else None
     result["ratchet"] = direction.lower()
     return result
 
@@ -535,7 +577,14 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
             base_desired = _state_for_importance(importance)
         desired, direction = _directed_state(base_desired, current_state, event.get("direction"))
 
-        rows = _samples(observations, event_ms, window_ms)
+        # Geometry is sampled across the anticipated visible framing episode, not just
+        # one boundary frame. This restores the older segment-wide headroom contract.
+        if desired != "CONTEXT":
+            _, preview_duration_ms = _zoom_duration(event, event_ms)
+            rows = _segment_samples(observations, event_ms, event_ms + preview_duration_ms, window_ms)
+        else:
+            rows = _samples(observations, event_ms, window_ms)
+
         states = _candidate_states(
             rows,
             width=width,
@@ -669,6 +718,7 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
             "continued_by_next": continued_by_next,
             "soft_build": gradual_build and bool(selected.get("soft_build", False)),
             "ratchet": selected.get("ratchet"),
+            "headroom_ratio": selected.get("headroom_ratio"),
         })
 
         current_state = selected["state"]
@@ -699,6 +749,7 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
             "quality_cap": quality_cap,
             "absolute_zoom_cap": absolute_cap,
             "state_caps": state_caps,
+            "min_headroom_ratio": MIN_HEADROOM_RATIO,
             "min_dwell_ms": min_dwell_ms,
             "preferred_change_ms": preferred_change_ms,
             "visual_refresh_target_ms": VISUAL_REFRESH_TARGET_MS[intensity],

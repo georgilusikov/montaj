@@ -2,7 +2,7 @@
 """Fail-closed production gate for the canonical Montaj pipeline.
 
 Two stages are supported:
-- pre-render: proves canonical analysis + visual evidence exist before render.
+- pre-render: proves canonical pacing/family analysis + semantics + visual evidence exist.
 - final: proves post-render pixel QC + final visual review exist before acceptance.
 
 This does not replace human/agent judgment; it makes missing evidence explicit.
@@ -14,7 +14,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-VERSION = "1.7.2-lite"
+VERSION = "1.7.5-lite"
 
 
 def _event_count(semantic: dict[str, Any]) -> int:
@@ -59,6 +59,39 @@ def _check_visual_review(
         errors.append({"check": f"{label}_visual_receipt_failed"})
 
 
+def _check_family_gate(cleanup: dict[str, Any], errors: list[dict[str, Any]], warnings: list[dict[str, Any]]) -> tuple[str, bool]:
+    family = str(cleanup.get("family") or "").upper()
+    if family not in {"A", "B", "C"}:
+        errors.append({"check": "family_gate_missing", "reason": "cleanup must record family A/B/C"})
+        return family, bool(cleanup.get("pause_cleanup_enabled", False))
+
+    metrics = cleanup.get("family_metrics")
+    if not isinstance(metrics, dict) or not metrics.get("source"):
+        errors.append({"check": "family_gate_provenance_missing"})
+
+    cleanup_enabled = bool(cleanup.get("pause_cleanup_enabled", False))
+    cuts = list(cleanup.get("content_cuts_ms") or [])
+    cfg = dict(cleanup.get("config") or {})
+
+    if family in {"A", "C"} and cuts and not cleanup_enabled:
+        errors.append({"check": "dense_family_has_unexplained_content_cuts", "family": family})
+    if family in {"A", "C"} and cleanup_enabled:
+        warnings.append({
+            "check": "dense_family_cleanup_override",
+            "family": family,
+            "reason": "A/C cleanup is allowed only as an explicit override; verify it was intentional",
+        })
+    if family == "B" and cleanup_enabled:
+        threshold = int(cfg.get("cut_threshold_ms", 0) or 0)
+        target = int(cfg.get("target_gap_ms", 0) or 0)
+        if not 200 <= threshold <= 350:
+            warnings.append({"check": "family_b_unusual_cut_threshold", "cut_threshold_ms": threshold})
+        if not 120 <= target <= 240:
+            warnings.append({"check": "family_b_unusual_target_gap", "target_gap_ms": target})
+
+    return family, cleanup_enabled
+
+
 def check_pre_render(
     cleanup: dict[str, Any],
     semantic: dict[str, Any],
@@ -77,6 +110,7 @@ def check_pre_render(
         errors.append({"check": "cleanup_output_words_missing"})
     if "content_cuts_ms" not in cleanup:
         errors.append({"check": "cleanup_content_cuts_missing"})
+    family, cleanup_enabled = _check_family_gate(cleanup, errors, warnings)
 
     allow_no_semantics = bool((semantic.get("config") or {}).get("allow_no_semantic_events", False))
     if _event_count(semantic) <= 0 and not allow_no_semantics:
@@ -111,6 +145,9 @@ def check_pre_render(
         "errors": errors,
         "warnings": warnings,
         "evidence": {
+            "family": family,
+            "pause_cleanup_enabled": cleanup_enabled,
+            "content_cut_count": len(cleanup.get("content_cuts_ms") or []),
             "semantic_event_count": _event_count(semantic),
             "visual_observation_count": len(observations),
             "face_coverage": coverage,

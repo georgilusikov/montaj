@@ -13,12 +13,16 @@ from visual_scan import _largest_box  # noqa: E402
 
 def good_artifacts():
     cleanup = {
-        "version": "1.7.1-lite",
+        "version": "1.7.5-lite",
+        "family": "B",
+        "family_metrics": {"source": "auto_raw_word_gaps", "gaps_over_450": 3},
+        "pause_cleanup_enabled": True,
+        "config": {"family": "B", "cut_threshold_ms": 250, "target_gap_ms": 180},
         "output_words": [{"text": "hello", "start_ms": 0, "end_ms": 300}],
         "content_cuts_ms": [1800],
     }
     semantic = {
-        "version": "1.7.1-lite",
+        "version": "1.7.5-lite",
         "semantic_event_count": 1,
         "semantic_events": [{"id": "hook", "t_ms": 1000}],
     }
@@ -34,9 +38,9 @@ def good_artifacts():
             "start_ms": 1000,
             "motion": "step",
             "state": "ARGUMENT",
-            "scale": 1.1,
+            "scale": 1.08,
             "crop_start": [0, 0, 1080, 1920],
-            "crop_end": [48, 86, 982, 1746],
+            "crop_end": [40, 72, 1000, 1778],
         }],
         "returns": [],
     }
@@ -90,7 +94,16 @@ class PipelineGuardTests(unittest.TestCase):
         self.assertEqual(report["status"], "PASS")
         self.assertEqual(report["pipeline_lock"], "PASS")
         self.assertEqual(report["visual_evidence"], "PASS")
+        self.assertEqual(report["evidence"]["family"], "B")
         validate_guard(report)
+
+    def test_pre_guard_fails_without_family_gate(self):
+        cleanup, semantic, scan, plan, pre_qc, manifest, review = good_artifacts()
+        cleanup.pop("family")
+        cleanup.pop("family_metrics")
+        report = check_pre_render(cleanup, semantic, scan, plan, pre_qc, manifest, review)
+        checks = {e["check"] for e in report["errors"]}
+        self.assertIn("family_gate_missing", checks)
 
     def test_pre_guard_fails_without_visual_review(self):
         cleanup, semantic, scan, plan, pre_qc, manifest, review = good_artifacts()

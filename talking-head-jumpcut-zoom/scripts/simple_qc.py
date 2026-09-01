@@ -6,8 +6,10 @@ import json
 from pathlib import Path
 from typing import Any
 
-DEFAULT_STATE_CAP = {"CONTEXT": 1.00, "ARGUMENT": 1.12, "EMPHASIS": 1.20}
-DEFAULT_ABSOLUTE_ZOOM_CAP = 1.20
+DEFAULT_STATE_CAP = {"CONTEXT": 1.00, "ARGUMENT": 1.08, "EMPHASIS": 1.12}
+DEFAULT_ABSOLUTE_ZOOM_CAP = 1.13
+DEFAULT_MIN_HEADROOM_RATIO = 0.05
+HEADROOM_TOLERANCE = 0.002
 DEFAULT_REQUIRE_VISIBLE_AFTER_MS = 8000
 
 
@@ -25,6 +27,7 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
     duration_ms = int(plan.get("source", {}).get("duration_ms") or 0)
     config = dict(plan.get("config") or {})
     absolute_cap = min(float(config.get("absolute_zoom_cap", DEFAULT_ABSOLUTE_ZOOM_CAP)), DEFAULT_ABSOLUTE_ZOOM_CAP)
+    min_headroom_ratio = max(0.0, float(config.get("min_headroom_ratio", DEFAULT_MIN_HEADROOM_RATIO)))
     require_visible_after_ms = int(config.get("require_visible_framing_after_ms", DEFAULT_REQUIRE_VISIBLE_AFTER_MS))
     allow_no_visible = bool(config.get("allow_no_visible_framing", False))
     semantic_contract_required = bool(config.get("semantic_contract_required", True))
@@ -75,9 +78,9 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
         state_cap = min(state_caps.get(state, absolute_cap), absolute_cap)
         ratchet = str(decision.get("ratchet") or "").lower()
         if ratchet == "ratchet_2":
-            state_cap = min(max(state_cap, 1.16), absolute_cap)
+            state_cap = min(max(state_cap, 1.12), absolute_cap)
         elif ratchet == "ratchet_3":
-            state_cap = min(max(state_cap, 1.20), absolute_cap)
+            state_cap = min(max(state_cap, 1.13), absolute_cap)
         end_scale = None
 
         for key in ("crop_start", "crop_end"):
@@ -114,6 +117,15 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
                 "cap": state_cap,
             })
 
+        headroom_ratio = decision.get("headroom_ratio")
+        if headroom_ratio is not None and float(headroom_ratio) + HEADROOM_TOLERANCE < min_headroom_ratio:
+            errors.append({
+                "index": index,
+                "check": "headroom_too_small",
+                "headroom_ratio": float(headroom_ratio),
+                "required": min_headroom_ratio,
+            })
+
         motion = str(decision.get("motion", "hold"))
         if motion != "hold" and decision.get("crop_start") == decision.get("crop_end"):
             errors.append({"index": index, "check": "noop_zoom", "motion": motion})
@@ -133,7 +145,7 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
         })
 
     return {
-        "version": "1.7.2-lite",
+        "version": "1.7.5-lite",
         "stage": "pre-render-qc",
         "status": "PASS" if not errors else "FAIL",
         "errors": errors,
@@ -147,7 +159,7 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="QC Montaj v1.7.2 Lite crop plan")
+    parser = argparse.ArgumentParser(description="QC Montaj v1.7.5 Lite crop plan")
     parser.add_argument("plan_json")
     parser.add_argument("--output-json", help="Persist QC receipt for pipeline_guard.py")
     args = parser.parse_args(argv)
