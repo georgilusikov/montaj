@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""
-Post-render verification for Montaj v1.7.1 Lite.
+"""Post-render verification for Montaj v1.7.2 Lite.
 
 For each visible semantic framing decision, compare the rendered frame with the
 frame that should result from applying the decision's crop to dense.mp4.
-This catches "planner says zoom, final.mp4 stayed at 100%" regressions.
 """
 from __future__ import annotations
 
@@ -38,10 +36,7 @@ def _extract_gray_frame(
             raise ValueError("source_size is required when crop is supplied")
         sw, sh = source_size
         vf.append(f"scale={sw}:{sh}:flags=lanczos")
-    vf.extend([
-        f"scale={PROBE_W}:{PROBE_H}:flags=lanczos",
-        "format=gray",
-    ])
+    vf.extend([f"scale={PROBE_W}:{PROBE_H}:flags=lanczos", "format=gray"])
 
     args = [
         "ffmpeg", "-v", "error",
@@ -99,23 +94,19 @@ def verify(
     width = int(source["width"])
     height = int(source["height"])
     visible = _visible_decisions(plan)
-
     errors: list[dict[str, Any]] = []
     probes: list[dict[str, Any]] = []
 
     if not Path(final_video).is_file() or Path(final_video).stat().st_size == 0:
         return {
-            "status": "FAIL",
-            "errors": [{"check": "final_missing"}],
-            "probes": [],
+            "version": "1.7.2-lite", "stage": "post-render-qc", "status": "FAIL",
+            "errors": [{"check": "final_missing"}], "probes": [],
             "visible_change_count": len(visible),
         }
-
     if not visible:
         return {
-            "status": "FAIL",
-            "errors": [{"check": "no_visible_plan_to_verify"}],
-            "probes": [],
+            "version": "1.7.2-lite", "stage": "post-render-qc", "status": "FAIL",
+            "errors": [{"check": "no_visible_plan_to_verify"}], "probes": [],
             "visible_change_count": 0,
         }
 
@@ -123,8 +114,7 @@ def verify(
         at_ms = _probe_time(decision)
         try:
             expected = _extract_gray_frame(
-                input_video,
-                at_ms,
+                input_video, at_ms,
                 crop=[int(v) for v in decision["crop_end"]],
                 source_size=(width, height),
             )
@@ -132,10 +122,8 @@ def verify(
             error = _mae(expected, actual)
         except Exception as exc:
             errors.append({
-                "index": index,
-                "check": "frame_probe_failed",
-                "at_ms": at_ms,
-                "detail": str(exc),
+                "index": index, "check": "frame_probe_failed",
+                "at_ms": at_ms, "detail": str(exc),
             })
             continue
 
@@ -160,6 +148,8 @@ def verify(
             })
 
     return {
+        "version": "1.7.2-lite",
+        "stage": "post-render-qc",
         "status": "PASS" if not errors else "FAIL",
         "errors": errors,
         "probes": probes,
@@ -174,11 +164,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("final_video")
     parser.add_argument("plan_json")
     parser.add_argument("--max-mae", type=float, default=DEFAULT_MAX_MAE)
+    parser.add_argument("--output-json", help="Persist post-render receipt for final pipeline guard")
     args = parser.parse_args(argv)
 
     plan = json.loads(Path(args.plan_json).read_text(encoding="utf-8"))
     report = verify(args.dense_video, args.final_video, plan, max_mae=args.max_mae)
-    print(json.dumps(report, ensure_ascii=False, indent=2))
+    text = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
+    if args.output_json:
+        Path(args.output_json).write_text(text, encoding="utf-8")
+    print(text, end="")
     return 0 if report["status"] == "PASS" else 2
 
 
