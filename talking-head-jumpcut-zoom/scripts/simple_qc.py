@@ -8,6 +8,15 @@ from typing import Any
 
 DEFAULT_STATE_CAP = {"CONTEXT": 1.00, "ARGUMENT": 1.08, "EMPHASIS": 1.12}
 DEFAULT_ABSOLUTE_ZOOM_CAP = 1.13
+
+V176_STATE_CAP = {
+    "CONTEXT": 1.00,
+    "SOFT": 1.05,
+    "ARGUMENT": 1.11,
+    "EMPHASIS": 1.14,
+}
+V176_ABSOLUTE_ZOOM_CAP = 1.16
+
 DEFAULT_MIN_HEADROOM_RATIO = 0.05
 HEADROOM_TOLERANCE = 0.002
 DEFAULT_REQUIRE_VISIBLE_AFTER_MS = 8000
@@ -26,17 +35,21 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
     height = int(plan["source"]["height"])
     duration_ms = int(plan.get("source", {}).get("duration_ms") or 0)
     config = dict(plan.get("config") or {})
-    absolute_cap = min(float(config.get("absolute_zoom_cap", DEFAULT_ABSOLUTE_ZOOM_CAP)), DEFAULT_ABSOLUTE_ZOOM_CAP)
+
+    is_v176 = str(plan.get("version", "")).startswith("1.7.6")
+    hard_absolute_cap = V176_ABSOLUTE_ZOOM_CAP if is_v176 else DEFAULT_ABSOLUTE_ZOOM_CAP
+    absolute_cap = min(float(config.get("absolute_zoom_cap", hard_absolute_cap)), hard_absolute_cap)
+
     min_headroom_ratio = max(0.0, float(config.get("min_headroom_ratio", DEFAULT_MIN_HEADROOM_RATIO)))
     require_visible_after_ms = int(config.get("require_visible_framing_after_ms", DEFAULT_REQUIRE_VISIBLE_AFTER_MS))
     allow_no_visible = bool(config.get("allow_no_visible_framing", False))
     semantic_contract_required = bool(config.get("semantic_contract_required", True))
 
-    state_caps = dict(DEFAULT_STATE_CAP)
+    state_caps = dict(V176_STATE_CAP if is_v176 else DEFAULT_STATE_CAP)
     for state, value in dict(config.get("state_caps") or {}).items():
         state = str(state).upper()
         if state in state_caps:
-            state_caps[state] = min(float(value), DEFAULT_ABSOLUTE_ZOOM_CAP)
+            state_caps[state] = min(float(value), hard_absolute_cap)
 
     errors: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
@@ -77,10 +90,18 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
         state = str(decision.get("state", "CONTEXT")).upper()
         state_cap = min(state_caps.get(state, absolute_cap), absolute_cap)
         ratchet = str(decision.get("ratchet") or "").lower()
-        if ratchet == "ratchet_2":
-            state_cap = min(max(state_cap, 1.12), absolute_cap)
-        elif ratchet == "ratchet_3":
-            state_cap = min(max(state_cap, 1.13), absolute_cap)
+        if is_v176:
+            if ratchet == "ratchet_1":
+                state_cap = min(max(state_cap, 1.11), absolute_cap)
+            elif ratchet == "ratchet_2":
+                state_cap = min(max(state_cap, 1.14), absolute_cap)
+            elif ratchet == "ratchet_3":
+                state_cap = min(max(state_cap, 1.16), absolute_cap)
+        else:
+            if ratchet == "ratchet_2":
+                state_cap = min(max(state_cap, 1.12), absolute_cap)
+            elif ratchet == "ratchet_3":
+                state_cap = min(max(state_cap, 1.13), absolute_cap)
         end_scale = None
 
         for key in ("crop_start", "crop_end"):
@@ -133,19 +154,27 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
             errors.append({"index": index, "check": "negative_duration"})
         if state == "CONTEXT" and decision.get("crop_end") != [0, 0, width, height]:
             errors.append({"index": index, "check": "context_not_source_frame"})
+        if bool(decision.get("cadence_refresh")) and float(decision.get("scale", 1.0)) > 1.055:
+            errors.append({
+                "index": index,
+                "check": "cadence_refresh_too_strong",
+                "scale": float(decision.get("scale", 1.0)),
+                "cap": 1.05,
+            })
 
     for index, request in enumerate(plan.get("cadence_requests", [])):
         if request.get("semantic_trigger") is not False:
             errors.append({"index": index, "check": "cadence_request_must_be_nonsemantic"})
         warnings.append({
             "index": index,
-            "check": "visual_gap_requires_jumpcut",
+            "check": "visual_gap_refresh_unresolved",
             "at_ms": int(request.get("at_ms", 0)),
-            "preferred_action": request.get("preferred_action", "jumpcut_same_scale"),
+            "preferred_action": request.get("preferred_action", "soft_framing_refresh"),
+            "reason": request.get("reason"),
         })
 
     return {
-        "version": "1.7.5-lite",
+        "version": "1.7.6-lite" if is_v176 else "1.7.5-lite",
         "stage": "pre-render-qc",
         "status": "PASS" if not errors else "FAIL",
         "errors": errors,
@@ -155,11 +184,12 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
         "visible_change_count": len(visible),
         "accent_intent_count": len(accent_intents),
         "cadence_request_count": len(plan.get("cadence_requests", [])),
+        "cadence_soft_change_count": sum(1 for d in planned if bool(d.get("cadence_refresh"))),
     }
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="QC Montaj v1.7.5 Lite crop plan")
+    parser = argparse.ArgumentParser(description="QC Montaj v1.7.x Lite crop plan")
     parser.add_argument("plan_json")
     parser.add_argument("--output-json", help="Persist QC receipt for pipeline_guard.py")
     args = parser.parse_args(argv)
