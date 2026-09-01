@@ -84,6 +84,12 @@ class VisualRhythmTests(unittest.TestCase):
         self.assertEqual(first["preferred_action"], "jumpcut_same_scale")
         self.assertFalse(first["semantic_trigger"])
         self.assertLessEqual(first["at_ms"], 5000)
+
+        # v1.7.1 fails closed on long talking-head edits with no semantic pass.
+        self.assertEqual(check(result)["status"], "FAIL")
+
+        # A deliberately cadence-only/no-zoom editorial choice must be explicit.
+        result["config"]["allow_no_visible_framing"] = True
         self.assertEqual(check(result)["status"], "PASS")
 
     def test_existing_content_cuts_satisfy_visual_cadence(self):
