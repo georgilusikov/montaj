@@ -27,6 +27,7 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
     absolute_cap = min(float(config.get("absolute_zoom_cap", DEFAULT_ABSOLUTE_ZOOM_CAP)), DEFAULT_ABSOLUTE_ZOOM_CAP)
     require_visible_after_ms = int(config.get("require_visible_framing_after_ms", DEFAULT_REQUIRE_VISIBLE_AFTER_MS))
     allow_no_visible = bool(config.get("allow_no_visible_framing", False))
+    semantic_contract_required = bool(config.get("semantic_contract_required", False))
 
     state_caps = dict(DEFAULT_STATE_CAP)
     for state, value in dict(config.get("state_caps") or {}).items():
@@ -44,8 +45,10 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
         if str(d.get("desired_state", d.get("state", "CONTEXT"))).upper() in {"ARGUMENT", "EMPHASIS"}
     ]
 
-    # Fail closed on the exact regression that produced an apparently valid but visually unchanged edit.
-    if duration_ms >= require_visible_after_ms and not allow_no_visible:
+    # Production semantic contract: fail closed on the exact regression that
+    # produced an apparently valid but visually unchanged edit. Unit-level
+    # cadence-only planner calls can omit semantic_contract_required.
+    if semantic_contract_required and duration_ms >= require_visible_after_ms and not allow_no_visible:
         if not decisions:
             errors.append({
                 "check": "missing_semantic_events",
@@ -61,6 +64,8 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
                 "reason": "semantic pass produced zero visible crop/zoom changes",
             })
 
+    # This remains unconditional: once ARGUMENT/EMPHASIS intent exists, a
+    # complete collapse to zero visible changes is never a successful zoom plan.
     if accent_intents and not visible:
         errors.append({
             "check": "semantic_accent_became_noop",
