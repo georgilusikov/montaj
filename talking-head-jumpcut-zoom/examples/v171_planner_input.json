@@ -1,0 +1,66 @@
+{
+  "analysis": {
+    "quality": {
+      "width": 1080,
+      "height": 1920,
+      "sharpness": 1.0,
+      "noise": 0.0,
+      "compression": 0.0
+    },
+    "observations": [
+      {"t_ms": 0, "face_ratio": 0.30, "face_cx": 0.50, "face_cy": 0.34, "hair_top": 0.15, "bottom_keep_y": 0.72},
+      {"t_ms": 250, "face_ratio": 0.30, "face_cx": 0.50, "face_cy": 0.34, "hair_top": 0.15, "bottom_keep_y": 0.72},
+      {"t_ms": 500, "face_ratio": 0.30, "face_cx": 0.50, "face_cy": 0.34, "hair_top": 0.15, "bottom_keep_y": 0.72},
+      {"t_ms": 750, "face_ratio": 0.30, "face_cx": 0.50, "face_cy": 0.34, "hair_top": 0.15, "bottom_keep_y": 0.72},
+      {"t_ms": 1000, "face_ratio": 0.30, "face_cx": 0.50, "face_cy": 0.34, "hair_top": 0.15, "bottom_keep_y": 0.72},
+      {"t_ms": 1250, "face_ratio": 0.30, "face_cx": 0.50, "face_cy": 0.34, "hair_top": 0.15, "bottom_keep_y": 0.72},
+      {"t_ms": 1500, "face_ratio": 0.30, "face_cx": 0.50, "face_cy": 0.34, "hair_top": 0.15, "bottom_keep_y": 0.72},
+      {"t_ms": 1750, "face_ratio": 0.30, "face_cx": 0.50, "face_cy": 0.34, "hair_top": 0.15, "bottom_keep_y": 0.72},
+      {"t_ms": 2000, "face_ratio": 0.30, "face_cx": 0.50, "face_cy": 0.34, "hair_top": 0.15, "bottom_keep_y": 0.72}
+    ]
+  },
+  "config": {
+    "source_type": "live",
+    "pace": "neutral",
+    "intensity": "moderate",
+    "window_ms": 500,
+    "wide_boost": false
+  },
+  "initial_state": "CONTEXT",
+  "initial_scale": 1.0,
+  "content_edits": [
+    {
+      "segment_id": "keep_01",
+      "src_start_ms": 0,
+      "src_end_ms": 2000,
+      "out_start_ms": 0,
+      "out_end_ms": 2000
+    }
+  ],
+  "semantic_events": [
+    {
+      "event_id": "evt_01",
+      "segment_id": "frame_01",
+      "t_ms": 500,
+      "requested_end_ms": 1400,
+      "context": {
+        "semantic_weight": 1.0,
+        "salience": 1.0,
+        "prosody": 1.0,
+        "narrative": 0.0,
+        "theme_tag": "warning",
+        "act_reset": false
+      },
+      "boundary_candidates": [
+        {
+          "candidate_id": "boundary_01",
+          "ms": 600,
+          "semantic_fit": 1.0,
+          "word_boundary": true,
+          "pause_score": 0.5,
+          "head_return": false
+        }
+      ]
+    }
+  ]
+}
