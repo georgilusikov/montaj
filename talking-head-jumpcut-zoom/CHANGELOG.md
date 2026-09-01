@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.1-lite] - 2026-09-01
+
+### Added
+- `semantic_events.py`: mandatory deterministic bridge from agent/LLM semantic WHY (`semantic_marks`) to dense-timeline `semantic_events` and word-boundary candidates.
+- `post_render_qc.py`: pixel-level verification that `final.mp4` actually contains the crop/zoom declared in `zoom_plan.json`.
+- `test_semantic_contract.py`: regression coverage for empty semantics, semantic no-op, deterministic word-index timing, explicit no-zoom override, and render-frame comparison helper.
+
+### Changed
+- `SKILL.md` now forbids direct `zoom_planner.py` execution before semantic marks and forbids ad-hoc replacement planners/build-analysis scripts during production runs.
+- `simple_qc.py` is fail-closed for long edits: missing semantic decisions, zero visible framing changes, and ARGUMENT/EMPHASIS intent collapsing to no-op are errors.
+- Acceptance now requires both pre-render plan QC and post-render pixel QC.
+
+### Fixed
+- Long talking-head videos can no longer silently render at a constant 100% crop and still receive QC PASS when semantic framing was expected.
+- The previously implicit/missing `semantic_events` producer is now an explicit pipeline stage with a validated schema.
+
 ## [1.4.1] - 2026-08-28
 
 ### Changed
