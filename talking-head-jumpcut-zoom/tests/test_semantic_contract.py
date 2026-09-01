@@ -41,7 +41,7 @@ class SemanticContractTests(unittest.TestCase):
         self.assertEqual(event["t_ms"], words[4]["start_ms"])
         self.assertEqual(event["end_ms"], words[7]["end_ms"])
         self.assertEqual(event["direction"], "peak")
-        self.assertEqual(event["semantic_source"], "agent_mark_v1")
+        self.assertEqual(event["semantic_source"], "agent_mark_v1.7.5")
         self.assertTrue(event["boundary_candidates"])
         self.assertTrue(all(c["word_boundary"] for c in event["boundary_candidates"]))
 
@@ -52,6 +52,53 @@ class SemanticContractTests(unittest.TestCase):
                 "semantic_marks": [{
                     "start_word": 2,
                     "importance": 0.8,
+                }],
+            })
+
+    def test_performance_can_only_amplify_existing_semantics(self):
+        result = build_events({
+            "words": dense_words(24),
+            "semantic_marks": [{
+                "id": "thesis",
+                "start_word": 2,
+                "end_word": 5,
+                "importance": 0.80,
+                "performance_emphasis": 1.0,
+                "performance_evidence": "speaker leans toward camera and increases delivery energy",
+                "why": "main thesis",
+            }],
+        })
+        event = result["semantic_events"][0]
+        self.assertEqual(event["semantic_importance"], 0.80)
+        self.assertAlmostEqual(event["performance_bonus"], 0.08)
+        self.assertAlmostEqual(event["importance"], 0.88)
+
+    def test_performance_does_not_promote_nonsemantic_mark(self):
+        result = build_events({
+            "words": dense_words(24),
+            "semantic_marks": [{
+                "id": "setup",
+                "start_word": 2,
+                "importance": 0.30,
+                "performance_emphasis": 1.0,
+                "performance_evidence": "large head movement",
+                "why": "setup only",
+            }],
+        })
+        event = result["semantic_events"][0]
+        self.assertEqual(event["importance"], 0.30)
+        self.assertEqual(event["performance_bonus"], 0.0)
+
+    def test_performance_requires_visual_or_prosodic_evidence(self):
+        with self.assertRaisesRegex(ValueError, "performance_evidence"):
+            build_events({
+                "words": dense_words(24),
+                "semantic_marks": [{
+                    "id": "thesis",
+                    "start_word": 2,
+                    "importance": 0.7,
+                    "performance_emphasis": 0.9,
+                    "why": "thesis",
                 }],
             })
 
