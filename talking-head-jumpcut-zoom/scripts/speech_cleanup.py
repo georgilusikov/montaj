@@ -21,7 +21,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-CUT_THRESHOLD_DEFAULT_MS = 500
+CUT_THRESHOLD_DEFAULT_MS = 250
 TARGET_GAP_DEFAULT_MS = 180
 HEAD_PAD_DEFAULT_MS = 120
 TAIL_PAD_DEFAULT_MS = 350

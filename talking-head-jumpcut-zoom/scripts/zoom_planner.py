@@ -17,10 +17,10 @@ from statistics import median
 from typing import Any
 
 STATE_TARGET = {"CONTEXT": 0.30, "ARGUMENT": 0.35, "EMPHASIS": 0.41}
-STATE_CAP = {"CONTEXT": 1.00, "ARGUMENT": 1.12, "EMPHASIS": 1.20}
+STATE_CAP = {"CONTEXT": 1.00, "ARGUMENT": 1.08, "EMPHASIS": 1.12}
 ABSOLUTE_ZOOM_CAP = 1.20
-STYLE_CAP = {"calm": 1.10, "moderate": 1.16, "dynamic": 1.20}
-MIN_STEP = {"calm": 0.04, "moderate": 0.06, "dynamic": 0.06}
+STYLE_CAP = {"calm": 1.10, "moderate": 1.12, "dynamic": 1.16}
+MIN_STEP = {"calm": 0.04, "moderate": 0.035, "dynamic": 0.04}
 MIN_DWELL_MS = {"calm": 2000, "moderate": 1500, "dynamic": 1200}
 
 PREFERRED_CHANGE_MS = {"calm": 3000, "moderate": 2500, "dynamic": 2200}
@@ -33,17 +33,17 @@ CADENCE_REQUEST_HALF_WINDOW_MS = 750
 # Ratchet (Лесенка) progression levels for listing/arguments
 RATCHET_LEVELS = {
     "RATCHET_1": 1.08,
-    "RATCHET_2": 1.16,
-    "RATCHET_3": 1.20,
+    "RATCHET_2": 1.12,
+    "RATCHET_3": 1.16,
 }
 
 SOFT_BUILD_SCALE = {"calm": 1.03, "moderate": 1.05, "dynamic": 1.06}
 SOFT_BUILD_PUSH_MS = {"calm": 2800, "moderate": 2400, "dynamic": 2000}
 
 ZOOM_DURATION_BANDS_MS = {
-    "micro_punch": (800, 1400, 1100),
-    "beat": (1500, 2400, 2000),
-    "argument_hold": (2500, 3500, 3000),
+    "micro_punch": (500, 1200, 800),
+    "beat": (1200, 2000, 1600),
+    "argument_hold": (2000, 2500, 2200),
 }
 CONTINUATION_GRACE_MS = 500
 STRONG_PEAK_MIN_DWELL_MS = 800

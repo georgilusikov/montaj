@@ -71,10 +71,10 @@ accepted final
 
 `speech_cleanup.py` owns pacing.
 
-Default policy:
+Family B default policy:
 
-- pauses `<= 500 ms` preserved;
-- pauses `> 500 ms` reduced to about `180 ms`;
+- pauses `<= 250 ms` preserved;
+- pauses `> 250 ms` reduced to about `180 ms`;
 - about `120 ms` head pad;
 - about `350 ms` tail pad;
 - `15 ms` audio fades around hard cuts;
@@ -191,15 +191,16 @@ Gaze/head pose never creates WHY. It only improves WHEN.
 
 ## Visual vocabulary
 
-Default moderate:
+Default gold-lite:
 
 ```text
 CONTEXT     1.00x
-ARGUMENT    ~1.10–1.12
-EMPHASIS    ~1.16
+ARGUMENT    ~1.06–1.10
+EMPHASIS    ~1.12
+ratchet_3   ~1.16
 ```
 
-Dynamic may reach 1.20 for strong EMPHASIS.
+Dynamic may reach 1.16; hard cap 1.20.
 
 Actual scale is constrained by:
 
@@ -242,9 +243,9 @@ Transition is eased densely at 60 Hz.
 
 ### Episode duration
 
-- `micro_punch`: 0.8–1.4 s;
-- `beat`: 1.5–2.4 s;
-- `argument_hold`: 2.5–3.5 s.
+- `micro_punch`: 0.5–1.2 s;
+- `beat`: 1.2–2.0 s;
+- `argument_hold`: 2.0–2.5 s.
 
 ARGUMENT/EMPHASIS are temporary episodes. After the beat, normally return to exact CONTEXT.
 

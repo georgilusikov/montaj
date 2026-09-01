@@ -57,8 +57,8 @@ class TestRatchetAndAnchor(unittest.TestCase):
         planned = [d for d in res["decisions"] if d["status"] == "PLANNED"]
         self.assertEqual(len(planned), 3)
         self.assertEqual(planned[0]["scale"], 1.08)
-        self.assertEqual(planned[1]["scale"], 1.16)
-        self.assertEqual(planned[2]["scale"], 1.20)
+        self.assertEqual(planned[1]["scale"], 1.12)
+        self.assertEqual(planned[2]["scale"], 1.16)
         self.assertTrue(len(res["returns"]) >= 1)
         self.assertEqual(res["returns"][-1]["state"], "CONTEXT")
         self.assertEqual(res["returns"][-1]["scale"], 1.0)

@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.4-lite] - 2026-09-01
+
+### Changed
+- Family B pause default `cut_threshold_ms` **250** (`speech_cleanup.py`); `target_gap` still 180.
+- Zoom gold-lite in planner: ARGUMENT cap 1.10, EMPHASIS/style moderate 1.12, ratchet 1.08/1.12/1.16; shorter episode bands.
+- `SKILL.md` / `V1_7_LITE.md`: do not zoom setup/bridge; ~1 punch per 7 s; default peak 1.12 not 1.16; Whisper word-end tails may need RMS-auxiliary trim.
+
+## [1.7.3-lite] - 2026-09-01
+
+### Changed
+- `SKILL.md` only (no Python): family gate A/B/C before pause cleanup; family B `cut_threshold` ~250–300 ms with `target_gap` 180 ms; gold-lite zoom (home majority, punch 1.06–1.10, strong 1.12–1.16, short episodes); hook/CTA default CONTEXT; WHY is thesis/payoff not bare numbers. Evidence: 1080p gold pairs 0712, 0814, 0818a, 0818b.
+
 ## [1.7.2-lite] - 2026-09-01
 
 ### Added

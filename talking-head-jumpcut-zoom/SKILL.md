@@ -1,9 +1,9 @@
 ---
 name: talking-head-jumpcut-zoom
-description: 'Автомонтаж вертикальных talking-head видео (9:16, Shorts, Reels, TikTok) по архитектуре v1.7.2 Lite: normalize → speech_cleanup → visual_scan → agent semantic WHY → semantic_events → zoom_planner → QC → visual evidence review → pipeline guard → render → pixel QC → final visual review. Triggers: "смонтируй говорящую голову", "talking head zoom", "сделай зумы как в рилс", "подрежь паузы и расставь зумы", "автомонтаж shorts", "zoom_planner", "ratchet zoom".'
+description: 'Автомонтаж вертикальных talking-head видео (9:16, Shorts, Reels, TikTok) по архитектуре v1.7.4 Lite: normalize → family gate → speech_cleanup → visual_scan → agent semantic WHY → semantic_events → zoom_planner → QC → visual evidence review → pipeline guard → render → pixel QC → final visual review. Triggers: "смонтируй говорящую голову", "talking head zoom", "сделай зумы как в рилс", "подрежь паузы и расставь зумы", "автомонтаж shorts", "zoom_planner", "ratchet zoom".'
 ---
 
-# Talking-Head Jumpcut & Zoom Editor v1.7.2 Lite
+# Talking-Head Jumpcut & Zoom Editor v1.7.4 Lite
 
 **Goal:** deterministic talking-head editing where the agent chooses editorial meaning, canonical scripts own timing/rendering, and every claim about the actual video has visual evidence.
 
@@ -194,18 +194,41 @@ Do not fabricate the receipt from filenames/metadata without viewing the images.
 
 ---
 
-## 3. Phase 1 — speech cleanup
+## 3. Phase 1 — family gate then speech cleanup
 
-`speech_cleanup.py` owns pacing.
+Measure the **raw** take before cutting. Do not apply one pause policy to every talking-head.
 
-Default strict policy:
+### Family gate (from raw pauses / duration, not from taste)
 
-- pauses `<= 500 ms` preserved;
-- pauses `> 500 ms` reduced to about `180 ms`;
+| Family | How to recognize on RAW | Audio rule |
+|---|---|---|
+| **A dense** | few or no gaps `> 450 ms`; speech is already tight | **skip pause cleanup**; duration stays ≈ raw |
+| **B air** | several gaps `> 250–300 ms` between clauses | cut those gaps; leave breath `~180 ms` |
+| **C other** | body is dense like A, but gold may *append* a CTA take | **do not invent** a CTA; skip body cleanup; only stitch a second take if the owner supplied it |
+
+If family is ambiguous, prefer A (do not cut) over inventing tightness.
+
+### Speech cleanup (`speech_cleanup.py`)
+
+Strict mode still does not remove fillers, false starts or spoken words.
+
+Family B config — put this in `speech_input.json` (canonical default is now 250 ms):
+
+```json
+{"mode": "strict", "cut_threshold_ms": 250, "target_gap_ms": 180}
+```
+
+- pauses `<= 250 ms` preserved;
+- pauses `> 250 ms` reduced to about `180 ms`;
 - about `120 ms` head pad;
 - about `350 ms` tail pad;
-- short audio fades around hard cuts;
-- strict mode does not remove fillers, false starts or spoken words.
+- short audio fades around hard cuts.
+
+Whisper often glues breath onto `word.end_ms`. Word-gap cleanup then **undercuts** family B (0818a: −3.3 s vs gold −6.6 s). RMS/VAD is **auxiliary**: after the word-gap plan, if remaining dead air after a clause is still `> 250 ms`, trim that tail down to `~180 ms`. Never delete spoken words. Never replace `speech_cleanup.py` with a custom cutter.
+
+Family A / C body: do not call cleanup as a duration compressor. Jumpcuts on A are **visual** (caption/zoom), not `content_cuts_ms`.
+
+`target_gap_ms ≈ 180` is the gold breath remainder. Do **not** splice clauses to 0 ms.
 
 Output includes:
 
@@ -248,34 +271,48 @@ For spoken span >=8 s, empty semantic marks fail by default. Intentional editori
 
 ### Valid WHY
 
-- hook / contrarian thesis;
+- contrarian **thesis** after a home hook (not the first words by default);
 - antithesis or correction;
-- important rule/number;
-- warning/consequence;
-- argument change;
+- payoff **after** a number/formula, not the numeral itself;
+- warning/consequence / "right answer" after a prohibition;
+- argument change / new block (then often return to CONTEXT first);
 - example → conclusion;
-- punchline/conclusion;
-- explicit list escalation.
+- punchline;
+- explicit list item **payoff**, not every list token.
 
 Not WHY by itself:
 
 - elapsed time;
 - gaze/head return;
 - jumpcut occurrence;
-- "it has been a while since the last zoom".
+- "it has been a while since the last zoom";
+- the hook sentence if it is still setup (`Nunca…` / a formula prompt);
+- the bare number (`120`, `60`) on a new formula — gold keeps CONTEXT there;
+- CTA / link-in-bio — default **release to CONTEXT**, not EMPHASIS.
+
+Opening hook and closing CTA are usually **1.00x home**. First punch lands on the first real thesis or contrast, typically ~5–9 s, not at t=0.
+
+Do **not** zoom setup/bridge lines (gold kept CONTEXT): “E aqui está o que quase ninguém entende”, “E você não exige com palavras”, new-block intros. Punch the **payoff** of that sentence.
+
+Budget: about **one visible punch per ~7 s** of dense speech (≈12–14 on a ~100 s family-B take). One STRONG peak. Do not turn one 8–10 s rule block into four micro-punches.
 
 ---
 
 ## 5. Visual vocabulary
 
-Default moderate:
+Gold talking-head (1080p manual edits 0712/0814/0818) spends most time at home. Punches are small and brief.
+
+Default **gold-lite** (replaces the old moderate 1.16-hold look):
 
 ```text
-CONTEXT     1.00x       exact source frame / home
-ARGUMENT    ~1.10–1.12
-EMPHASIS    ~1.16
-dynamic EMPHASIS hard cap 1.20
+CONTEXT     1.00x       exact source frame / home   ← majority of runtime
+PUNCH       ~1.06–1.10  short accent  (planner ARGUMENT)
+STRONG      ~1.12       default peak  (planner EMPHASIS)
+ratchet_3   ~1.16       only explicit list climax
+hard cap    1.20
 ```
+
+Do **not** plan 1.16 as the normal peak. Gold talking-head peak is ~1.12 (0818a climax 1.12 × ~5 s). 1.16 is optional ratchet_3, not EMPHASIS-by-default.
 
 Actual scale is constrained by:
 
@@ -298,13 +335,17 @@ Primary language:
 - `slow_push` — rare and explicit;
 - `hold` — no framing change.
 
-Typical temporary episode lengths:
+Typical temporary episode lengths (gold-lite):
 
-- `micro_punch`: 0.8–1.4 s;
-- `beat`: 1.5–2.4 s;
-- `argument_hold`: 2.5–3.5 s.
+- `micro_punch`: 0.5–1.2 s  ← default accent;
+- `beat`: 1.2–2.0 s;
+- `argument_hold`: 2.0–2.5 s, rare, only for a climax.
 
-Normally return to exact CONTEXT after the episode.
+Prefer many short punches with return-to-home over few long holds.
+
+On a new block (`Agora…`, new list, new rule): reset to CONTEXT first, then punch the payoff.
+
+Normally return to exact CONTEXT after the episode. CTA stays CONTEXT.
 
 Hard reject transition points with visual evidence of:
 
@@ -341,7 +382,9 @@ Delta_Y = (Y_eyes - Y_center) * (1 - 1/scale)
 visual refresh every ~2–5 s != zoom every ~2–5 s
 ```
 
-`content_cuts_ms` already count as visual refreshes.
+Gold often refreshes via **caption card changes** (~1.5–2.5 s). This skill still does not invent a subtitle compositor during a zoom run. Until a separate caption renderer exists, family-B `content_cuts_ms` plus short punches/returns are the only legal refreshes.
+
+`content_cuts_ms` already count as visual refreshes. On family A there may be **zero** content cuts — do not fake pause-cuts to create rhythm.
 
 If a long visual gap remains, planner may request:
 

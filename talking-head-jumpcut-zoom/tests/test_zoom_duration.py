@@ -58,8 +58,8 @@ class ZoomDurationTests(unittest.TestCase):
         result = plan(payload([event("long", 1000, 7000)]))
         decision = result["decisions"][0]
         self.assertEqual(decision["zoom_duration_type"], "argument_hold")
-        self.assertEqual(decision["zoom_duration_ms"], 3500)
-        self.assertEqual(result["returns"][0]["start_ms"], 4500)
+        self.assertEqual(decision["zoom_duration_ms"], 2500)
+        self.assertEqual(result["returns"][0]["start_ms"], 3500)
 
     def test_nearby_peak_extends_tension_instead_of_flashing_context(self):
         data = payload(

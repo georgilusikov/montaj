@@ -14,7 +14,7 @@ class SpeechCleanupTests(unittest.TestCase):
             "source": {"duration_ms": 3000},
             "words": [
                 {"text": "one", "start_ms": 200, "end_ms": 500},
-                {"text": "two", "start_ms": 850, "end_ms": 1100},
+                {"text": "two", "start_ms": 680, "end_ms": 980},
             ],
         }
         result = plan_cleanup(payload)
@@ -22,7 +22,7 @@ class SpeechCleanupTests(unittest.TestCase):
         self.assertEqual(result["content_cuts_ms"], [])
         segment = result["kept_segments"][0]
         self.assertEqual(segment["src_start_ms"], 80)
-        self.assertEqual(segment["src_end_ms"], 1450)
+        self.assertEqual(segment["src_end_ms"], 1330)
 
     def test_long_pause_is_reduced_to_target_gap(self):
         payload = {
@@ -43,6 +43,7 @@ class SpeechCleanupTests(unittest.TestCase):
     def test_output_mapping_and_content_cut_are_contiguous(self):
         payload = {
             "source": {"duration_ms": 4000},
+            "config": {"cut_threshold_ms": 500, "target_gap_ms": 180},
             "words": [
                 {"text": "a", "start_ms": 200, "end_ms": 500},
                 {"text": "b", "start_ms": 1500, "end_ms": 1800},

@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-DEFAULT_STATE_CAP = {"CONTEXT": 1.00, "ARGUMENT": 1.12, "EMPHASIS": 1.20}
+DEFAULT_STATE_CAP = {"CONTEXT": 1.00, "ARGUMENT": 1.08, "EMPHASIS": 1.12}
 DEFAULT_ABSOLUTE_ZOOM_CAP = 1.20
 DEFAULT_REQUIRE_VISIBLE_AFTER_MS = 8000
 
@@ -75,9 +75,9 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
         state_cap = min(state_caps.get(state, absolute_cap), absolute_cap)
         ratchet = str(decision.get("ratchet") or "").lower()
         if ratchet == "ratchet_2":
-            state_cap = min(max(state_cap, 1.16), absolute_cap)
+            state_cap = min(max(state_cap, 1.12), absolute_cap)
         elif ratchet == "ratchet_3":
-            state_cap = min(max(state_cap, 1.20), absolute_cap)
+            state_cap = min(max(state_cap, 1.16), absolute_cap)
         end_scale = None
 
         for key in ("crop_start", "crop_end"):
