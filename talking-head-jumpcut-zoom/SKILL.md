@@ -260,7 +260,7 @@ This lets HOW strengthen WHAT without returning to random movement-driven zooms.
 
 ## 5. Gold-lite visual language
 
-The v1.7.4 scale reduction is retained and made unambiguous.
+The v1.7.4 scale reduction is retained and made more conservative.
 
 ```text
 CONTEXT     1.00x  exact source/home; majority of runtime
@@ -268,20 +268,41 @@ ARGUMENT    1.08x  normal semantic punch
 EMPHASIS    1.12x  strong peak
 RATCHET_1   1.08x
 RATCHET_2   1.12x
-RATCHET_3   1.16x  explicit list climax only
-ABS HARD CAP 1.20x
+RATCHET_3   1.13x  explicit list climax only
+ABS HARD CAP 1.13x
 ```
 
-`ARGUMENT` is **1.08**, not “1.06–1.10”. Geometry may reduce a requested scale, never silently enlarge it above the state/style cap.
+`ARGUMENT` is **1.08**, not “1.06–1.10”. Geometry may reduce a requested scale, never silently enlarge it above the state/style/global cap. Source resolution never raises the artistic hard cap above `1.13x`.
 
 Actual crop still obeys:
 
 - source geometry;
 - face size/travel;
-- headroom;
+- **segment-wide headroom >= 5%**;
 - quality cap;
 - state/style cap;
 - gesture/prop/caption safety.
+
+### Restored segment-wide headroom invariant
+
+Headroom is an active composition rule, not merely an emergency rejection after the crop is chosen.
+
+For every visible framing episode, sample `hair_top` across the whole anticipated shot and use the highest head position:
+
+```text
+hair_top_segment = min(hair_top[t] across the framing episode)
+required_headroom = 0.05 * crop_height
+Y_crop = min(Y_eye_anchor, hair_top_segment_px - required_headroom)
+```
+
+Then clamp the crop to source bounds and run normal face/gesture safety checks.
+
+Meaning:
+
+- keep at least about **5% of output-frame height above the hair** throughout the shot;
+- if the desired zoom cannot preserve that air, prefer a smaller zoom or no zoom;
+- eye-line anchoring remains useful, but headroom has priority when the two conflict;
+- do not chase the face per frame: Tripod Lock still applies within the episode.
 
 4K resolution does not automatically justify a stronger artistic zoom.
 
@@ -376,7 +397,8 @@ Pre-render `simple_qc.py` remains fail-closed for:
 - missing semantics on a normal spoken edit;
 - zero visible framing when semantics expect it;
 - semantic ARGUMENT/EMPHASIS collapsing to a silent no-op;
-- invalid/excessive state scale.
+- invalid/excessive state scale;
+- declared headroom below the 5% composition floor.
 
 `pipeline_guard.py pre-render` additionally requires:
 
@@ -419,7 +441,8 @@ No layer should silently take over another layer's job.
 - 250 ms is Family-B policy, not a global default.
 - Ambiguous AUTO pacing fails safe to A.
 - No unimplemented RMS/VAD instruction invites ad-hoc cutters.
-- Normal punch is canonical 1.08; strong peak 1.12; ratchet climax 1.16.
+- Normal punch is canonical 1.08; strong peak 1.12; ratchet climax max 1.13; **nothing exceeds 1.13x**.
+- Every visible crop preserves **>=5% segment-wide headroom** when `hair_top` evidence is available.
 - Performance can amplify semantic salience but cannot create semantic events.
 - Punch density is a ceiling, never a quota.
 - Coherent build->peak episodes may sustain tension without home-frame chatter.
