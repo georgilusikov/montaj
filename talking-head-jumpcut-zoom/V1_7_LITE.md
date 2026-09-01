@@ -1,92 +1,13 @@
-# Talking-Head Jumpcut & Zoom Editor v1.7 Lite
+# Talking-Head Jumpcut & Zoom Editor v1.7.1 Lite
 
-**Goal:** dynamic talking-head editing without turning the skill into a framework.
+**Goal:** dynamic talking-head editing with deterministic timing and fail-closed verification, without turning the skill into a large framework.
 
-## Pipeline
-
-```text
-normalized source
-        ↓
-Whisper word timings
-        ↓
-scripts/speech_cleanup.py
-        ↓
-cleanup_plan.json + dense.mp4 + remapped output_words
-        ↓
-perception + semantic analysis on dense timeline
-        ↓
-analysis.json + content_cuts_ms
-        ↓
-scripts/zoom_planner.py
-        ↓
-zoom_plan.json
-        ↓
-scripts/render_zoom.py
-        ↓
-final.mp4
-        ↓
-scripts/simple_qc.py
-```
+## Core invariant
 
 There are two independent edit planes:
 
 1. **CONTENT / PACING** — remove long pauses and create jumpcuts.
-2. **FRAMING / SEMANTICS** — use zoom/reframe only when meaning justifies it.
-
-Zoom must never be used as a substitute for speech cleanup.
-
----
-
-## Phase 1 — strict speech cleanup
-
-The old skill already treated pause removal as a separate first phase. Lite restores that contract with one small deterministic script: `scripts/speech_cleanup.py`.
-
-Input:
-
-```json
-{
-  "source": {"duration_ms": 88000},
-  "config": {
-    "mode": "strict",
-    "cut_threshold_ms": 500,
-    "target_gap_ms": 180,
-    "head_pad_ms": 120,
-    "tail_pad_ms": 350,
-    "audio_fade_ms": 15
-  },
-  "words": [
-    {"text": "hello", "start_ms": 500, "end_ms": 820}
-  ]
-}
-```
-
-Default policy:
-
-- pauses `<= 500 ms` are preserved;
-- pauses `> 500 ms` are reduced to about `180 ms` total silence;
-- keep about `120 ms` before the first spoken word;
-- keep about `350 ms` after the final spoken word;
-- use tiny `15 ms` audio fades around hard cuts to avoid clicks;
-- do **not** remove fillers, false starts or words in Lite `strict` mode.
-
-Output:
-
-- `kept_segments`: exact source→output mapping;
-- `content_cuts_ms`: jumpcut positions on the dense output timeline;
-- `removed_gaps`: audit of removed silence;
-- `output_words`: original transcript words remapped to dense output time;
-- optional rendered `dense.mp4` when `--input-video` and `--output-video` are supplied.
-
-The dense output timeline is the canonical timeline for all later semantic/framing decisions.
-
----
-
-## Core principle
-
-There are two different reasons to change the picture:
-
-1. **PACING** — keep the visual stream alive, normally with a content jumpcut / same-scale reframe.
-2. **SEMANTICS** — emphasize meaning with framing/zoom.
+2. **FRAMING / SEMANTICS** — change crop/zoom only when meaning justifies it.
 
 ```text
 visual refresh every ~2–5 s
@@ -94,104 +15,251 @@ visual refresh every ~2–5 s
 zoom every ~2–5 s
 ```
 
-Subtitles are external and do not count as camera/framing changes here.
+The v1.7.1 patch fixes a critical v1.7 Lite gap: the old pipeline expected `semantic_events` but did not define a mandatory producer for them. That allowed an agent to invent an ad-hoc `build_analysis.py`, omit semantics, render an unchanged 100% crop, and still receive QC PASS.
+
+---
+
+## Canonical pipeline
+
+```text
+normalized source
+        ↓
+Whisper word timings
+        ↓
+speech_cleanup.py
+        ↓
+cleanup_plan.json + dense.mp4 + output_words + content_cuts_ms
+        ↓
+AGENT SEMANTIC PASS (WHY only)
+        ↓
+semantic_marks.json
+        ↓
+semantic_events.py
+        ↓
+semantic_events.json
+        ↓
+perception / frame_defects.py
+        ↓
+analysis.json
+        ↓
+zoom_planner.py
+        ↓
+zoom_plan.json
+        ↓
+simple_qc.py  [PRE-RENDER, FAIL-CLOSED]
+        ↓ PASS only
+render_zoom.py
+        ↓
+final.mp4
+        ↓
+post_render_qc.py  [ACTUAL PIXELS]
+        ↓
+accepted final
+```
+
+### Non-negotiable execution rules
+
+- Never call `zoom_planner.py` before semantic marks exist.
+- Never replace canonical scripts with ad-hoc agent-written equivalents during a production run.
+- Never infer semantic WHY from gaze, head-return, elapsed time, or jumpcut cadence.
+- Never accept a long talking-head edit with zero visible semantic framing changes unless an explicit editorial no-zoom override is set.
+- JSON validity is not proof that the rendered artifact contains the planned crop changes.
+
+---
+
+## Phase 1 — strict speech cleanup
+
+`speech_cleanup.py` owns pacing.
+
+Default policy:
+
+- pauses `<= 500 ms` preserved;
+- pauses `> 500 ms` reduced to about `180 ms`;
+- about `120 ms` head pad;
+- about `350 ms` tail pad;
+- `15 ms` audio fades around hard cuts;
+- strict mode does not remove fillers, false starts or words.
+
+Output:
+
+- `kept_segments`;
+- `content_cuts_ms`;
+- `removed_gaps`;
+- `output_words` remapped to dense output time;
+- optional `dense.mp4`.
+
+The dense output timeline is canonical for every later timestamp.
+
+---
+
+## Phase 2A — Semantic Director contract
+
+The agent/LLM owns **WHY**, not milliseconds.
+
+Input to `semantic_events.py`:
+
+```json
+{
+  "words": [
+    {"text": "Nunca", "start_ms": 0, "end_ms": 280},
+    {"text": "se", "start_ms": 300, "end_ms": 390}
+  ],
+  "semantic_marks": [
+    {
+      "id": "hook",
+      "start_word": 0,
+      "end_word": 6,
+      "importance": 0.78,
+      "direction": "build",
+      "motion_hint": "step",
+      "zoom_duration_type": "beat",
+      "why": "contrarian opening thesis"
+    }
+  ]
+}
+```
+
+Required per mark:
+
+- `start_word`;
+- `end_word`;
+- `importance` in `0..1`;
+- non-empty `why`.
+
+Optional:
+
+- `direction`: `build|peak|release|neutral|ratchet_1|ratchet_2|ratchet_3`;
+- `motion_hint`: `auto|step|slow_push`;
+- `zoom_duration_type`: `micro_punch|beat|argument_hold`;
+- `transition_ms`.
+
+`semantic_events.py` then owns timing:
+
+- maps word indices to exact dense `t_ms/end_ms`;
+- generates nearby word-boundary candidates;
+- marks pauses as boundary bonuses;
+- validates word order, ranges and semantic schema.
+
+### Fail-closed semantic rule
+
+If spoken span is at least 8 seconds and `semantic_marks=[]`, the semantic producer raises an error by default.
+
+Explicit exception:
+
+```json
+{
+  "config": {
+    "allow_no_semantic_events": true
+  }
+}
+```
+
+This exception must mean an intentional editorial no-zoom decision, not a failed semantic pass.
+
+---
+
+## WHY model
+
+Importance:
+
+- `< 0.40` → CONTEXT;
+- `0.40 .. 0.84` → ARGUMENT;
+- `>= 0.85` → EMPHASIS.
+
+Useful semantic triggers:
+
+- hook / contrarian thesis;
+- antithesis;
+- important rule/number;
+- warning / consequence;
+- argument change;
+- example → conclusion;
+- punchline / conclusion;
+- list escalation.
+
+Direction:
+
+- `build` — rising tension;
+- `peak` — strongest justified beat;
+- `release` — return to CONTEXT;
+- `neutral` — hold;
+- `ratchet_1/2/3` — explicit escalation in lists.
+
+Gaze/head pose never creates WHY. It only improves WHEN.
 
 ---
 
 ## Visual vocabulary
 
-Default moderate style:
+Default moderate:
 
 ```text
-CONTEXT     1.00x       exact source frame / visual home
-ARGUMENT    ~1.10–1.12  normal semantic punch
-EMPHASIS    ~1.16       rare strong peak (dynamic may reach 1.20)
+CONTEXT     1.00x
+ARGUMENT    ~1.10–1.12
+EMPHASIS    ~1.16
 ```
 
-`CONTEXT` is always the full source frame. 4K quality may make crops cleaner but never raises artistic caps.
+Dynamic may reach 1.20 for strong EMPHASIS.
 
-The planner computes accent scale from actual face size and geometry. If a close state is unsafe or perceptually redundant, downgrade/collapse it.
+Actual scale is constrained by:
 
----
+- real face size;
+- geometry;
+- quality cap;
+- style cap;
+- state cap;
+- crop safety.
 
-## WHY: semantics
-
-Importance:
-
-- `< 0.40` → CONTEXT
-- `0.40 .. 0.84` → ARGUMENT
-- `>= 0.85` → EMPHASIS
-
-Optional direction:
-
-- `build` — rising tension;
-- `peak` — strongest justified beat;
-- `release` — return to CONTEXT;
-- `neutral` — hold.
-
-Gaze/head pose never creates WHY. It may only improve WHEN.
-
-Useful semantic triggers include antithesis, change of subject, warning, important number/rule, quote/axiom, conclusion and punchline. These are LLM hints, not Python keyword rules.
+4K does not silently create more aggressive artistic zooms.
 
 ---
 
 ## Motion
 
-### Default: step/reframe
+### Default step/reframe
 
-Normal ARGUMENT and EMPHASIS use a clean discrete reframe on a safe word/clause boundary.
+Normal ARGUMENT and EMPHASIS:
 
 ```text
 1.00 → 1.12 → 1.00
 ```
 
-This remains the primary Reels/Shorts visual language.
+### Rare slow push
 
-### Rare gradual BUILD
-
-A slow push is **not automatic for every `build`**.
-
-The semantic layer must explicitly request:
+Only when semantic mark explicitly requests:
 
 ```json
-{"direction":"build", "motion_hint":"slow_push"}
+{"direction":"build","motion_hint":"slow_push"}
 ```
 
-Then a first moderate BUILD from CONTEXT uses a partial crop around **1.05x** and reaches it over roughly **1.5–3.0 s** (default ~2.4 s).
+Soft build targets around:
 
-```text
-1.00 ───slow──→ ~1.05
-```
+- calm `1.03`;
+- moderate `1.05`;
+- dynamic `1.06`.
 
-A direct thesis/antithesis should normally skip the soft build and jump straight to ~1.12.
+Transition is eased densely at 60 Hz.
 
-Slow pushes are interpolated densely at 60 Hz with easing. The old 10 Hz stair-step interpolation is forbidden.
+### Episode duration
+
+- `micro_punch`: 0.8–1.4 s;
+- `beat`: 1.5–2.4 s;
+- `argument_hold`: 2.5–3.5 s.
+
+ARGUMENT/EMPHASIS are temporary episodes. After the beat, normally return to exact CONTEXT.
 
 ---
 
-## Zoom episode duration
-
-ARGUMENT/EMPHASIS are temporary semantic episodes, not persistent states.
-
-- `micro_punch`: **0.8–1.4 s**
-- `beat`: **1.5–2.4 s**
-- `argument_hold`: **2.5–3.5 s**
-
-If no explicit type is supplied, infer it from semantic-clause duration.
-
-After an episode, normally return to exact CONTEXT 1.00x. Closely connected `build → peak` beats may stay close to avoid a one-frame base flash.
-
----
-
-## WHEN
+## WHEN / feasibility
 
 Hard reject transition points with:
 
 - blink / long eye closure;
+- MAR mouth distortion;
 - blur;
-- unsafe head pose / strong turn;
+- unsafe pose / strong head turn;
 - hard gesture/prop conflict;
-- unsafe crop geometry.
+- unsafe crop / face travel / headroom.
 
 Soft bonuses:
 
@@ -199,28 +267,37 @@ Soft bonuses:
 - word boundary;
 - pause;
 - head return;
-- preferred camera rhythm.
+- preferred cadence.
 
 Minimum dwell:
 
-- calm: 2000 ms
-- moderate: 1500 ms
-- dynamic: 1200 ms
-- very strong explicit peak: provisional 800 ms
+- calm 2000 ms;
+- moderate 1500 ms;
+- dynamic 1200 ms;
+- very strong peak may provisionally use 800 ms.
 
-Auto-return should not intentionally cut through an unsafe gesture; if a safer boundary is available nearby, prefer it. The duration band is guidance, not permission to cut mechanically in the middle of motion.
+### Tripod Lock
+
+No per-frame face-following during hold. Crop center is fixed across the episode. Camera changes only on step or deterministic slow push.
+
+### Eye anchor
+
+For slow push:
+
+```text
+Delta_Y = (Y_eyes - Y_center) * (1 - 1/scale)
+```
 
 ---
 
-## The 2–5 second visual-rhythm rule
+## Visual cadence
 
-The **content/jumpcut layer owns cadence**. `zoom_planner.py` accepts `content_cuts_ms` from Phase 1 and combines them with real framing changes.
+The pacing layer owns cadence. `content_cuts_ms` are included in the planner so it knows which visual refreshes already exist.
 
-If the known timeline still contains a visual gap larger than the style maximum (moderate: ~5 s), the planner emits a non-semantic `cadence_request` such as:
+If a known gap remains too long, the planner may emit:
 
 ```json
 {
-  "at_ms": 10500,
   "preferred_action": "jumpcut_same_scale",
   "fallback_action": "hold_if_no_safe_cut",
   "semantic_trigger": false,
@@ -228,68 +305,151 @@ If the known timeline still contains a visual gap larger than the style maximum 
 }
 ```
 
-`cadence_requests` are requests to the content-cut layer, not camera motions. If there is no safe/natural extra cut, holding is better than manufacturing a fake zoom.
-
-There is **no ambient `1.00 ↔ 1.04/1.05` watchdog**.
+A cadence request is never converted into a fake semantic zoom.
 
 ---
 
-## Geometry
+## Pre-render QC — fail closed
 
-For each semantic event inspect a short temporal window and keep:
+`simple_qc.py` checks geometry/caps/no-op constraints plus semantic completeness.
 
-- crop inside source;
-- face/hair safely inside crop;
-- face below max size;
-- caption/gesture/prop safety;
-- one fixed crop safe across the event window.
+New v1.7.1 gates:
 
-Renderer receives final pixel crops and never re-solves composition.
+### 1. Missing semantics
 
----
+For long edits:
 
-## Renderer contract
+```text
+duration >= 8 s
+AND decisions == []
+→ FAIL missing_semantic_events
+```
 
-Phase 1 renders the dense speech timeline. Phase 2 `render_zoom.py` operates on that dense video only.
+### 2. Semantic pass with no visible output
 
-`zoom_plan.json` contains:
+```text
+duration >= 8 s
+AND visible_change_count == 0
+→ FAIL no_visible_framing_changes
+```
 
-- semantic `decisions`;
-- explicit `returns` to CONTEXT;
-- `content_cuts_ms` for cadence awareness;
-- non-rendering `cadence_requests` for optional additional content cuts.
+### 3. Accent intent collapsed to no-op
 
-Renderer executes semantic framing decisions + returns. It does not manufacture cadence zooms.
+```text
+ARGUMENT/EMPHASIS intent exists
+AND visible_change_count == 0
+→ FAIL semantic_accent_became_noop
+```
 
----
+Intentional no-zoom requires:
 
-## QC Lite
+```json
+{"config":{"allow_no_visible_framing":true}}
+```
 
-Check:
-
-1. speech cleanup output mapping is contiguous;
-2. words remain in order and are remapped to output time;
-3. crop bounds;
-4. no scale below 1.00;
-5. CONTEXT is exact source framing;
-6. accent state caps;
-7. non-hold motion actually changes crop;
-8. cadence requests are non-semantic;
-9. transcript/text integrity is unchanged by strict cleanup.
+No silent fallback.
 
 ---
 
-## Definition of done
+## Post-render QC — verify actual pixels
 
-- long pauses are removed **before** semantic zoom planning;
-- strict cleanup never removes spoken words;
-- dense output provides `kept_segments`, `content_cuts_ms` and remapped `output_words`;
-- WHY is semantic and independent from gaze;
-- CONTEXT = 1.00x source frame;
-- ARGUMENT is the common ~1.12 punch;
-- EMPHASIS is rare;
-- zoom duration follows the phrase;
-- auto-return prevents close framing from sticking;
-- slow BUILD is explicit and rare;
-- no ambient camera breathing;
-- visual cadence is maintained primarily by speech/content jumpcuts, with `cadence_requests` only when a >5 s gap remains.
+`post_render_qc.py` closes the second gap: plan PASS does not prove render execution.
+
+For every visible semantic framing decision:
+
+1. choose a probe frame after the transition landed;
+2. read the same frame from `dense.mp4`;
+3. apply the planned `crop_end` to create the expected image;
+4. read the corresponding frame from `final.mp4`;
+5. compare low-resolution grayscale frames using mean absolute error.
+
+If the final frame does not match the planned crop:
+
+```text
+FAIL render_does_not_match_planned_crop
+```
+
+This catches the regression:
+
+```text
+zoom_plan.json says 1.12x
+BUT final.mp4 remains 1.00x
+```
+
+---
+
+## Golden no-op regression
+
+A 115-second talking-head with meaningful semantics must not pass with:
+
+```json
+{
+  "decisions": []
+}
+```
+
+and must not pass with:
+
+```json
+{
+  "decisions": [
+    {
+      "status": "KEEP",
+      "desired_state": "ARGUMENT",
+      "state": "CONTEXT"
+    }
+  ]
+}
+```
+
+Tests live in:
+
+```text
+tests/test_semantic_contract.py
+```
+
+They cover:
+
+- long spoken clip without semantic marks;
+- deterministic word-index → ms mapping;
+- required semantic reason;
+- empty decisions on long video;
+- ARGUMENT intent collapsing to no-op;
+- explicit intentional no-zoom override.
+
+---
+
+## Canonical commands
+
+```bash
+python scripts/speech_cleanup.py speech_input.json cleanup_plan.json \
+  --input-video normalized.mp4 \
+  --output-video dense.mp4 \
+  --export-srt captions.srt
+
+python scripts/semantic_events.py semantic_input.json semantic_events.json
+
+# Assemble:
+# analysis.json = source
+#               + observations
+#               + semantic_events.json#semantic_events
+#               + cleanup_plan.json#content_cuts_ms
+
+python scripts/zoom_planner.py analysis.json zoom_plan.json
+
+python scripts/simple_qc.py zoom_plan.json
+
+# only after PRE-RENDER PASS
+python scripts/render_zoom.py dense.mp4 zoom_plan.json final.mp4
+
+python scripts/post_render_qc.py dense.mp4 final.mp4 zoom_plan.json
+```
+
+Acceptance condition:
+
+```text
+semantic contract valid
+AND pre-render QC PASS
+AND final artifact rendered
+AND post-render pixel QC PASS
+```
