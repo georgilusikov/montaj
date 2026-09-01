@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.5-lite] - 2026-09-01
+
+### Added
+- Executable family A/B/C gate inside `speech_cleanup.py`; AUTO classification is deterministic and ambiguous footage fails safe to Family A.
+- Bounded performance-aware salience in `semantic_events.py`: HOW may amplify an existing semantic mark by at most +0.08 importance and requires evidence; performance never creates WHY.
+- Pipeline guard now requires family-gate provenance before production render.
+- Regression tests for family fail-safe behavior, Family-B 250→180 cleanup, missing family provenance, and performance amplification boundaries.
+
+### Changed
+- Generic pause cleanup default is back to fail-safe 500 ms; Family B explicitly resolves to 250 ms. Family A/C skip pause compression by default.
+- Gold-lite framing is made unambiguous: normal ARGUMENT 1.08, EMPHASIS 1.12, ratchet 1.08/1.12/1.16.
+- `~1 punch / 7 s` is documented only as an observational density ceiling, never a quota or cadence target.
+- Dramatic continuity is restored: adjacent build→peak beats in one thought may sustain tension instead of forcing repeated home-frame chatter.
+- `V1_7_LITE.md` is replaced with a current v1.7.5 engineering contract instead of the stale v1.7.1 title/content.
+
+### Removed
+- The production instruction to improvise RMS/VAD tail trimming without a canonical acoustic detector. Word timings remain authoritative until a tested canonical detector exists.
+
+### Fixed
+- Closed the v1.7.4 mismatch where `family gate` existed in prose but the mandatory pipeline jumped directly to cleanup.
+- Closed the v1.7.4 regression where global `CUT_THRESHOLD_DEFAULT_MS=250` could overcut dense Family-A speech if the gate was skipped.
+- Closed contradictory documentation around ARGUMENT 1.08 vs 1.10.
+
 ## [1.7.4-lite] - 2026-09-01
 
 ### Changed
