@@ -1,19 +1,69 @@
 ---
 name: talking-head-jumpcut-zoom
-description: 'Автомонтаж вертикальных talking-head видео (9:16, Shorts, Reels, TikTok) по архитектуре v1.7.1 Lite: normalize → speech_cleanup → agent semantic WHY → semantic_events.py → frame defects/perception → zoom_planner.py → fail-closed simple_qc.py → render_zoom.py → post_render_qc.py. Triggers: "смонтируй говорящую голову", "talking head zoom", "сделай зумы как в рилс", "подрежь паузы и расставь зумы", "автомонтаж shorts", "v1.7 lite", "zoom_planner", "ratchet zoom".'
+description: 'Автомонтаж вертикальных talking-head видео (9:16, Shorts, Reels, TikTok) по архитектуре v1.7.2 Lite: normalize → speech_cleanup → visual_scan → agent semantic WHY → semantic_events → zoom_planner → QC → visual evidence review → pipeline guard → render → pixel QC → final visual review. Triggers: "смонтируй говорящую голову", "talking head zoom", "сделай зумы как в рилс", "подрежь паузы и расставь зумы", "автомонтаж shorts", "zoom_planner", "ratchet zoom".'
 ---
 
-# Talking-Head Jumpcut & Zoom Editor v1.7.1 Lite
+# Talking-Head Jumpcut & Zoom Editor v1.7.2 Lite
 
-Компактный production-ready пайплайн для talking-head. Главный принцип:
+**Goal:** deterministic talking-head editing where the agent chooses editorial meaning, canonical scripts own timing/rendering, and every claim about the actual video has visual evidence.
+
+Core invariant:
 
 ```text
-CONTENT/PACING ≠ SEMANTIC FRAMING
+CONTENT / PACING != SEMANTIC FRAMING != VISUAL EVIDENCE
 ```
 
-Паузы и jumpcut-ритм принадлежат Phase 1. Зум/крупность появляются только из смысла.
+- pauses and content jumpcuts belong to pacing;
+- zoom/reframe exists only because meaning justifies it;
+- visual safety/aesthetic claims require machine perception or actually inspected frames.
 
-## 1. Обязательный пайплайн
+---
+
+## 0. CANONICAL PIPELINE LOCK — highest priority
+
+For a production run the canonical scripts are mandatory.
+
+**Never create replacement production scripts** such as:
+
+```text
+run_full_montage.py
+fast_montage.py
+segment_montage.py
+build_analysis.py
+new_zoom_planner.py
+custom_renderer.py
+```
+
+when an equivalent canonical stage already exists.
+
+If a canonical step fails:
+
+```text
+STOP → diagnose the canonical step → fix/use the canonical step → rerun
+```
+
+Do **not** silently bypass it with an ad-hoc implementation.
+
+`render_zoom.py` is machine-locked: production CLI rendering requires a PASS receipt from `pipeline_guard.py pre-render`.
+
+`--unsafe-bypass-pipeline-lock` is for tests/debug only and is forbidden in production skill execution.
+
+### Scope lock
+
+This skill owns:
+
+- source normalization;
+- strict speech cleanup / jumpcuts;
+- visual observations for crop/cut safety;
+- semantic zoom planning;
+- zoom rendering;
+- QC.
+
+It may export SRT captions, but it does **not** invent a subtitle graphics pipeline during a zoom run. If a separate canonical subtitle renderer is not available/requested, do not create looped PNG overlays or a new subtitle compositor.
+
+---
+
+## 1. Mandatory production pipeline
 
 ```text
 1. normalize_source.py
@@ -23,217 +73,450 @@ CONTENT/PACING ≠ SEMANTIC FRAMING
         ↓ raw words
 
 3. speech_cleanup.py
-        ↓ dense.mp4 + output_words + content_cuts_ms
+        ↓ cleanup_plan.json + dense.mp4 + output_words + content_cuts_ms
 
-4. Agent semantic pass — WHY ONLY
+4. visual_scan.py
+        ↓ visual_scan.json + observations
+        machine perception of dense.mp4
+
+5. AGENT SEMANTIC PASS — WHY ONLY
         ↓ semantic_marks.json
 
-5. semantic_events.py
+6. semantic_events.py
         ↓ semantic_events.json
-        (word indices → exact dense-timeline ms + boundary candidates)
-
-6. frame_defects.py / perception
-        ↓ observations / defect gates
+        word spans → exact dense-timeline ms + boundary candidates
 
 7. assemble analysis.json
-        ↓ semantic_events + observations + content_cuts_ms
+        ↓ source + observations + semantic_events + content_cuts_ms
 
 8. zoom_planner.py
         ↓ zoom_plan.json
 
-9. simple_qc.py                 ← MUST PASS BEFORE RENDER
-        ↓
+9. simple_qc.py --output-json pre_qc.json
+        ↓ MUST PASS
 
-10. render_zoom.py
+10. visual_evidence.py dense.mp4 ... --phase pre
+        ↓ pre_visual/visual_evidence.json + extracted JPGs
+
+11. AGENT/HUMAN VISUAL REVIEW
+        ↓ pre_visual_review.json
+        agent MUST actually open the extracted images
+
+12. pipeline_guard.py pre-render
+        ↓ pre_guard.json MUST PASS
+
+13. render_zoom.py --guard-report pre_guard.json
         ↓ final.mp4
 
-11. post_render_qc.py           ← MUST PASS ON ACTUAL PIXELS
+14. post_render_qc.py --output-json post_qc.json
+        ↓ actual-pixel QC MUST PASS
+
+15. visual_evidence.py final.mp4 ... --phase final
+        ↓ final_visual/visual_evidence.json + extracted JPGs
+
+16. AGENT/HUMAN FINAL VISUAL REVIEW
+        ↓ final_visual_review.json
+
+17. pipeline_guard.py final
+        ↓ final_guard.json MUST PASS
         ↓ accepted final
 ```
 
-**Запрещено:**
-- вызывать `zoom_planner.py` до semantic pass;
-- создавать ad-hoc `build_analysis.py`, новый planner или подменять scripts своей реализацией;
-- считать `0` зумов успешным результатом длинного talking-head без явного override;
-- принимать PASS только потому, что JSON валиден;
-- использовать gaze/head-return как WHY.
+No omitted mandatory stage may be described as a successful production run.
 
-Если обязательный шаг не выполнен — остановиться с FAIL, а не молча деградировать до same-scale edit.
+---
 
-## 2. Semantic Director contract — агент отвечает только за WHY
+## 2. What it means for the agent to "watch" the video
 
-Агент читает `output_words` на dense timeline и создаёт `semantic_marks.json`.
+Do not say or imply "I watched/checked the video" merely because you ran:
+
+```text
+ffprobe
+Whisper
+RMS/silence detection
+JSON inspection
+```
+
+Those tools do not inspect visual content.
+
+There are two valid visual evidence paths:
+
+### A. Machine perception — full timeline sampling
+
+`visual_scan.py` samples `dense.mp4` and measures:
+
+- face bbox / center / size;
+- eye line when available;
+- EAR/MAR when MediaPipe FaceMesh is available;
+- Laplacian blur;
+- optical-flow motion;
+- hard visual rejection when face detection fails or quality is unsafe.
+
+Backend order:
+
+```text
+MediaPipe FaceMesh if available
+        ↓ fallback
+OpenCV Haar face detection
+```
+
+Default scan is lightweight (~6 samples/s), not every decoded frame sent to an LLM.
+
+If face coverage is below 70%, the scan fails closed by default. Do not replace missing visual evidence with assumptions.
+
+### B. Actual vision review — selected frames
+
+`visual_evidence.py` extracts `-160 / 0 / +160 ms` frames around:
+
+- every content jumpcut;
+- every visible semantic zoom/reframe;
+- every return-to-context framing change.
+
+A vision-capable agent or human must **open these images** and write a review receipt.
+
+Example receipt:
 
 ```json
 {
-  "words": [
-    {"text": "Nunca", "start_ms": 0, "end_ms": 280}
-  ],
-  "semantic_marks": [
+  "status": "PASS",
+  "reviewer": "vision_model",
+  "reviewed_groups": [
     {
-      "id": "hook",
-      "start_word": 0,
-      "end_word": 6,
-      "importance": 0.78,
-      "direction": "build",
-      "motion_hint": "step",
-      "zoom_duration_type": "beat",
-      "why": "contrarian opening thesis"
+      "id": "zoom_00018200",
+      "verdict": "PASS",
+      "notes": "face remains stable; reframe does not cut gesture"
     }
   ]
 }
 ```
 
-Обязательные поля mark:
-- `start_word`, `end_word` — индексы слов, не придуманные миллисекунды;
-- `importance` 0..1;
-- `why` — конкретная смысловая причина.
+Do not fabricate the receipt from filenames/metadata without viewing the images.
 
-Опционально:
+---
+
+## 3. Phase 1 — speech cleanup
+
+`speech_cleanup.py` owns pacing.
+
+Default strict policy:
+
+- pauses `<= 500 ms` preserved;
+- pauses `> 500 ms` reduced to about `180 ms`;
+- about `120 ms` head pad;
+- about `350 ms` tail pad;
+- short audio fades around hard cuts;
+- strict mode does not remove fillers, false starts or spoken words.
+
+Output includes:
+
+- `kept_segments`;
+- `removed_gaps`;
+- `content_cuts_ms`;
+- `output_words` remapped to the dense timeline;
+- optional `dense.mp4` and SRT.
+
+The **dense timeline is canonical** for all later timestamps.
+
+Do not replace word-timing cleanup with a custom RMS-only silence cutter. RMS can be auxiliary evidence, not the canonical edit decision source.
+
+---
+
+## 4. Semantic Director — agent owns WHY, not milliseconds
+
+The agent reads `output_words` and creates semantic marks.
+
+Required per mark:
+
+```json
+{
+  "start_word": 12,
+  "end_word": 20,
+  "importance": 0.78,
+  "why": "important correction of the viewer's assumption"
+}
+```
+
+Optional:
+
 - `direction`: `build|peak|release|neutral|ratchet_1|ratchet_2|ratchet_3`;
 - `motion_hint`: `auto|step|slow_push`;
 - `zoom_duration_type`: `micro_punch|beat|argument_hold`.
 
-`semantic_events.py` детерминированно переводит word spans в реальные `t_ms/end_ms` и создаёт nearby word-boundary candidates. Агент **не назначает финальный таймкод склейки**.
+`semantic_events.py` owns exact timing and boundary candidates.
 
-Для spoken span ≥8 s пустой `semantic_marks` = FAIL по умолчанию. Намеренный no-zoom требует явного `allow_no_semantic_events=true`.
+For spoken span >=8 s, empty semantic marks fail by default. Intentional editorial no-zoom requires the explicit override and must not hide a failed semantic pass.
 
-### Что считается WHY
+### Valid WHY
 
-Полезные причины:
 - hook / contrarian thesis;
-- антитеза;
-- важное правило или число;
-- предупреждение / consequence;
-- смена аргумента;
-- пример → вывод;
-- punchline / conclusion;
-- escalation в перечислении.
+- antithesis or correction;
+- important rule/number;
+- warning/consequence;
+- argument change;
+- example → conclusion;
+- punchline/conclusion;
+- explicit list escalation.
 
-Не являются WHY сами по себе:
-- прошло N секунд;
-- взгляд вернулся в камеру;
-- произошёл jumpcut;
-- «давно не было зума».
+Not WHY by itself:
 
-## 3. Visual vocabulary
+- elapsed time;
+- gaze/head return;
+- jumpcut occurrence;
+- "it has been a while since the last zoom".
+
+---
+
+## 5. Visual vocabulary
 
 Default moderate:
 
 ```text
 CONTEXT     1.00x       exact source frame / home
-ARGUMENT    ~1.10–1.12  normal semantic punch
-EMPHASIS    ~1.16       rare peak
-dynamic EMPHASIS cap    1.20
+ARGUMENT    ~1.10–1.12
+EMPHASIS    ~1.16
+dynamic EMPHASIS hard cap 1.20
 ```
 
-Фактическая крупность вычисляется из реального размера лица и безопасной геометрии. 4K повышает quality headroom, но не художественный zoom cap.
+Actual scale is constrained by:
 
-## 4. Motion
+- measured face size;
+- crop geometry;
+- quality cap;
+- style cap;
+- state cap;
+- crop safety.
 
-- `step` — основной язык Reels/Shorts;
-- `slow_push` — редкий, только по explicit semantic `motion_hint`;
-- `hold` — если смысл не требует изменения.
+4K resolution gives quality headroom, not permission for artistically stronger zoom.
 
-`ARGUMENT/EMPHASIS` — временные semantic episodes:
+---
+
+## 6. Motion and WHEN
+
+Primary language:
+
+- `step` — default semantic reframe;
+- `slow_push` — rare and explicit;
+- `hold` — no framing change.
+
+Typical temporary episode lengths:
+
 - `micro_punch`: 0.8–1.4 s;
 - `beat`: 1.5–2.4 s;
 - `argument_hold`: 2.5–3.5 s.
 
-После эпизода обычно возврат в exact CONTEXT 1.00x.
+Normally return to exact CONTEXT after the episode.
 
-## 5. WHEN и геометрия
+Hard reject transition points with visual evidence of:
 
-Hard reject boundary:
 - blink / long eye closure;
-- MAR mouth distortion;
+- mouth distortion;
 - blur;
 - unsafe head pose / strong turn;
-- hard gesture/prop conflict;
+- hard gesture or prop conflict;
 - unsafe crop / face travel / headroom.
 
 Soft bonuses:
-- близость к semantic event;
+
+- semantic proximity;
 - word boundary;
 - pause;
 - head return;
 - cadence fit.
 
-Gaze/head pose влияет только на **WHEN**, никогда не создаёт WHY.
-
 ### Tripod Lock
 
-Внутри `hold` crop `(X,Y)` фиксирован. Покадровый face tracking запрещён. Камера меняется только через `step` или детерминированный `slow_push`.
+Crop center is fixed during a hold. No per-frame face chasing.
 
-### Eye anchor
-
-Для slow push:
+### Eye anchor for slow push
 
 ```text
 Delta_Y = (Y_eyes - Y_center) * (1 - 1/scale)
 ```
 
-Линия глаз не должна плавать при изменении крупности.
+---
 
-## 6. Visual rhythm
+## 7. Visual rhythm
 
 ```text
-visual refresh every ~2–5 s ≠ zoom every ~2–5 s
+visual refresh every ~2–5 s != zoom every ~2–5 s
 ```
 
-`content_cuts_ms` принадлежат pacing layer. Если образовался длинный visual gap, planner может вернуть `cadence_request=jumpcut_same_scale`; это не semantic zoom.
+`content_cuts_ms` already count as visual refreshes.
 
-## 7. Fail-closed QC
-
-### Pre-render: `simple_qc.py`
-
-Помимо geometry/caps/no-op проверок:
-
-- spoken edit ≥8 s + `decisions=[]` → `missing_semantic_events` → FAIL;
-- long edit + `visible_change_count=0` → `no_visible_framing_changes` → FAIL;
-- есть ARGUMENT/EMPHASIS intent, но ни одного видимого crop change → `semantic_accent_became_noop` → FAIL.
-
-Только намеренный editorial no-zoom:
+If a long visual gap remains, planner may request:
 
 ```json
-{"config": {"allow_no_visible_framing": true}}
+{
+  "preferred_action": "jumpcut_same_scale",
+  "fallback_action": "hold_if_no_safe_cut",
+  "semantic_trigger": false,
+  "why": "visual_refresh_gap"
+}
 ```
 
-### Post-render: `post_render_qc.py`
+Cadence never creates fake semantic WHY.
 
-Для каждого видимого semantic decision:
-1. берёт frame из `dense.mp4`;
-2. применяет ожидаемый `crop_end`;
-3. сравнивает его с реальным frame из `final.mp4`;
-4. если пиксели не соответствуют плану → FAIL `render_does_not_match_planned_crop`.
+---
 
-Так JSON PASS больше не является доказательством, что зум реально попал в видео.
+## 8. QC and evidence gates
 
-## 8. Canonical commands
+### Pre-render plan QC
+
+`simple_qc.py` fails on:
+
+- missing semantic decisions on a long edit;
+- zero visible framing changes when semantics require them;
+- ARGUMENT/EMPHASIS intent collapsing to a no-op;
+- invalid crop/scale/cap geometry.
+
+Persist the receipt:
 
 ```bash
-# pacing
-python scripts/speech_cleanup.py speech_input.json cleanup_plan.json \
-  --input-video normalized.mp4 \
-  --output-video dense.mp4 \
-  --export-srt captions.srt
-
-# WHY → deterministic timing
-python scripts/semantic_events.py semantic_input.json semantic_events.json
-
-# assemble analysis.json from:
-# source + observations + semantic_events.json#semantic_events + cleanup_plan.json#content_cuts_ms
-
-python scripts/zoom_planner.py analysis.json zoom_plan.json
-
-# mandatory pre-render gate
-python scripts/simple_qc.py zoom_plan.json
-
-# render only after PASS
-python scripts/render_zoom.py dense.mp4 zoom_plan.json final.mp4
-
-# mandatory artifact verification
-python scripts/post_render_qc.py dense.mp4 final.mp4 zoom_plan.json
+python scripts/simple_qc.py zoom_plan.json --output-json pre_qc.json
 ```
 
-Acceptance = **pre-render PASS + post-render PASS**.
+### Pre-render visual gate
+
+Generate evidence:
+
+```bash
+python scripts/visual_evidence.py dense.mp4 zoom_plan.json pre_visual \
+  --cleanup-plan cleanup_plan.json --phase pre
+```
+
+Open the extracted images and create `pre_visual_review.json`.
+
+Then:
+
+```bash
+python scripts/pipeline_guard.py pre-render \
+  --cleanup cleanup_plan.json \
+  --semantic semantic_events.json \
+  --visual-scan visual_scan.json \
+  --zoom-plan zoom_plan.json \
+  --pre-qc pre_qc.json \
+  --visual-manifest pre_visual/visual_evidence.json \
+  --visual-review pre_visual_review.json \
+  --output-json pre_guard.json
+```
+
+Only PASS may render.
+
+### Post-render pixel QC
+
+```bash
+python scripts/post_render_qc.py dense.mp4 final.mp4 zoom_plan.json \
+  --output-json post_qc.json
+```
+
+This compares expected crop pixels to the actual artifact and catches:
+
+```text
+zoom_plan says 1.12x
+BUT final.mp4 stayed at 1.00x
+```
+
+### Final visual acceptance
+
+```bash
+python scripts/visual_evidence.py final.mp4 zoom_plan.json final_visual \
+  --cleanup-plan cleanup_plan.json --phase final
+```
+
+Actually inspect the final extracted images, produce `final_visual_review.json`, then:
+
+```bash
+python scripts/pipeline_guard.py final \
+  --pre-guard pre_guard.json \
+  --post-qc post_qc.json \
+  --visual-manifest final_visual/visual_evidence.json \
+  --visual-review final_visual_review.json \
+  --output-json final_guard.json
+```
+
+Only `accepted_final=true` is a production success.
+
+---
+
+## 9. Render performance rules
+
+Use the canonical `render_zoom.py`; do not react to slow rendering by inventing a replacement renderer.
+
+Production command:
+
+```bash
+python scripts/render_zoom.py dense.mp4 zoom_plan.json final.mp4 \
+  --guard-report pre_guard.json \
+  --encoder-preset fast
+```
+
+The renderer exposes FFmpeg `-progress` directly. **Do not capture or hide stderr/progress** and then estimate completion from output file size.
+
+Do not claim "90% complete" unless progress data supports it.
+
+Avoid in ad-hoc code:
+
+- looped image inputs without explicit bounded duration;
+- dozens of PNG overlay inputs for captions;
+- repeated independent decoding of the same 4K source;
+- `libx264 -preset slow` for ordinary iteration.
+
+`concat -c copy` only avoids an additional encode at concat time; it does not make already encoded segments lossless.
+
+---
+
+## 10. Canonical commands summary
+
+```bash
+python scripts/normalize_source.py raw.mp4 normalized.mp4
+
+python scripts/speech_cleanup.py speech_input.json cleanup_plan.json \
+  --input-video normalized.mp4 --output-video dense.mp4 --export-srt captions.srt
+
+python scripts/visual_scan.py dense.mp4 visual_scan.json
+
+python scripts/semantic_events.py semantic_input.json semantic_events.json
+
+# analysis.json = source + visual_scan.observations + semantic_events + content_cuts_ms
+python scripts/zoom_planner.py analysis.json zoom_plan.json
+
+python scripts/simple_qc.py zoom_plan.json --output-json pre_qc.json
+
+python scripts/visual_evidence.py dense.mp4 zoom_plan.json pre_visual \
+  --cleanup-plan cleanup_plan.json --phase pre
+# OPEN FRAMES → write pre_visual_review.json
+
+python scripts/pipeline_guard.py pre-render \
+  --cleanup cleanup_plan.json --semantic semantic_events.json \
+  --visual-scan visual_scan.json --zoom-plan zoom_plan.json \
+  --pre-qc pre_qc.json --visual-manifest pre_visual/visual_evidence.json \
+  --visual-review pre_visual_review.json --output-json pre_guard.json
+
+python scripts/render_zoom.py dense.mp4 zoom_plan.json final.mp4 --guard-report pre_guard.json
+
+python scripts/post_render_qc.py dense.mp4 final.mp4 zoom_plan.json --output-json post_qc.json
+
+python scripts/visual_evidence.py final.mp4 zoom_plan.json final_visual \
+  --cleanup-plan cleanup_plan.json --phase final
+# OPEN FRAMES → write final_visual_review.json
+
+python scripts/pipeline_guard.py final \
+  --pre-guard pre_guard.json --post-qc post_qc.json \
+  --visual-manifest final_visual/visual_evidence.json \
+  --visual-review final_visual_review.json --output-json final_guard.json
+```
+
+Acceptance condition:
+
+```text
+canonical stages present
+AND semantic contract valid
+AND machine visual scan valid
+AND pre-render QC PASS
+AND pre-render frames actually visually reviewed
+AND pipeline guard PASS
+AND canonical render completed
+AND post-render pixel QC PASS
+AND final frames actually visually reviewed
+AND final guard PASS
+```
