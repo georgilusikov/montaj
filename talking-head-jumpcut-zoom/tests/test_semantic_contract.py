@@ -58,6 +58,7 @@ class SemanticContractTests(unittest.TestCase):
     def test_qc_rejects_long_semantic_noop(self):
         report = check({
             "source": {"width": 1080, "height": 1920, "duration_ms": 115000},
+            "config": {"semantic_contract_required": True},
             "decisions": [{
                 "event_id": "important",
                 "status": "KEEP",
@@ -74,6 +75,7 @@ class SemanticContractTests(unittest.TestCase):
     def test_qc_rejects_missing_semantic_pass_on_long_video(self):
         report = check({
             "source": {"width": 1080, "height": 1920, "duration_ms": 115000},
+            "config": {"semantic_contract_required": True},
             "decisions": [],
         })
         self.assertEqual(report["status"], "FAIL")
@@ -82,7 +84,10 @@ class SemanticContractTests(unittest.TestCase):
     def test_explicit_override_allows_intentional_no_zoom(self):
         report = check({
             "source": {"width": 1080, "height": 1920, "duration_ms": 115000},
-            "config": {"allow_no_visible_framing": True},
+            "config": {
+                "semantic_contract_required": True,
+                "allow_no_visible_framing": True,
+            },
             "decisions": [],
         })
         self.assertEqual(report["status"], "PASS")
