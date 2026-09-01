@@ -91,7 +91,8 @@ def check_pre_render(
     if coverage < 0.70:
         errors.append({"check": "visual_face_coverage_low", "face_coverage": coverage})
 
-    if not zoom_plan.get("decisions"):
+    allow_no_visible = bool((zoom_plan.get("config") or {}).get("allow_no_visible_framing", False))
+    if not zoom_plan.get("decisions") and not allow_no_visible:
         errors.append({"check": "zoom_plan_decisions_missing"})
     if str(pre_qc.get("status", "")).upper() != "PASS":
         errors.append({"check": "pre_render_qc_not_pass"})
@@ -114,6 +115,7 @@ def check_pre_render(
             "visual_observation_count": len(observations),
             "face_coverage": coverage,
             "pre_qc_status": pre_qc.get("status"),
+            "allow_no_visible_framing": allow_no_visible,
             "visual_review_group_count": len(visual_manifest.get("required_group_ids", [])),
         },
     }
