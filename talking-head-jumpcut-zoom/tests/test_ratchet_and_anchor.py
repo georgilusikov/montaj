@@ -10,7 +10,7 @@ from zoom_planner import plan, _crop_for_scale_with_anchor
 
 
 class TestRatchetAndAnchor(unittest.TestCase):
-    def test_eye_anchor_formula(self):
+    def test_eye_anchor_formula_without_hair_landmark(self):
         width = 1080
         height = 1920
         rows = [{"face_cx": 0.5, "face_cy": 0.35, "eye_line_y": 0.30, "face_ratio": 0.28}]
@@ -20,7 +20,7 @@ class TestRatchetAndAnchor(unittest.TestCase):
         self.assertEqual(h, 1600)
         self.assertAlmostEqual(y, 96, delta=4)
 
-    def test_ratchet_escalation(self):
+    def test_ratchet_escalation_is_capped_at_113(self):
         payload = {
             "source": {"width": 1080, "height": 1920, "duration_ms": 12000, "quality_cap": 1.25},
             "config": {"intensity": "dynamic", "absolute_zoom_cap": 1.20},
@@ -58,7 +58,8 @@ class TestRatchetAndAnchor(unittest.TestCase):
         self.assertEqual(len(planned), 3)
         self.assertEqual(planned[0]["scale"], 1.08)
         self.assertEqual(planned[1]["scale"], 1.12)
-        self.assertEqual(planned[2]["scale"], 1.16)
+        self.assertEqual(planned[2]["scale"], 1.13)
+        self.assertEqual(res["config"]["absolute_zoom_cap"], 1.13)
         self.assertTrue(len(res["returns"]) >= 1)
         self.assertEqual(res["returns"][-1]["state"], "CONTEXT")
         self.assertEqual(res["returns"][-1]["scale"], 1.0)
