@@ -8,13 +8,26 @@ from typing import Any
 
 DEFAULT_STATE_CAP = {"CONTEXT": 1.00, "ARGUMENT": 1.12, "EMPHASIS": 1.20}
 DEFAULT_ABSOLUTE_ZOOM_CAP = 1.20
+DEFAULT_REQUIRE_VISIBLE_AFTER_MS = 8000
+
+
+def _is_visible_change(decision: dict[str, Any]) -> bool:
+    return (
+        decision.get("status") == "PLANNED"
+        and str(decision.get("motion", "hold")) != "hold"
+        and decision.get("crop_start") != decision.get("crop_end")
+    )
 
 
 def check(plan: dict[str, Any]) -> dict[str, Any]:
     width = int(plan["source"]["width"])
     height = int(plan["source"]["height"])
+    duration_ms = int(plan.get("source", {}).get("duration_ms") or 0)
     config = dict(plan.get("config") or {})
     absolute_cap = min(float(config.get("absolute_zoom_cap", DEFAULT_ABSOLUTE_ZOOM_CAP)), DEFAULT_ABSOLUTE_ZOOM_CAP)
+    require_visible_after_ms = int(config.get("require_visible_framing_after_ms", DEFAULT_REQUIRE_VISIBLE_AFTER_MS))
+    allow_no_visible = bool(config.get("allow_no_visible_framing", False))
+
     state_caps = dict(DEFAULT_STATE_CAP)
     for state, value in dict(config.get("state_caps") or {}).items():
         state = str(state).upper()
@@ -23,8 +36,39 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
 
     errors: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
+    decisions = list(plan.get("decisions", []))
+    planned = [d for d in decisions if d.get("status") == "PLANNED"]
+    visible = [d for d in decisions if _is_visible_change(d)]
+    accent_intents = [
+        d for d in decisions
+        if str(d.get("desired_state", d.get("state", "CONTEXT"))).upper() in {"ARGUMENT", "EMPHASIS"}
+    ]
 
-    for index, decision in enumerate(plan.get("decisions", [])):
+    # Fail closed on the exact regression that produced an apparently valid but visually unchanged edit.
+    if duration_ms >= require_visible_after_ms and not allow_no_visible:
+        if not decisions:
+            errors.append({
+                "check": "missing_semantic_events",
+                "duration_ms": duration_ms,
+                "reason": "long spoken edit reached zoom QC without semantic decisions",
+            })
+        elif not visible:
+            errors.append({
+                "check": "no_visible_framing_changes",
+                "duration_ms": duration_ms,
+                "decision_count": len(decisions),
+                "accent_intent_count": len(accent_intents),
+                "reason": "semantic pass produced zero visible crop/zoom changes",
+            })
+
+    if accent_intents and not visible:
+        errors.append({
+            "check": "semantic_accent_became_noop",
+            "accent_intent_count": len(accent_intents),
+            "reason": "ARGUMENT/EMPHASIS intent exists but no visible framing decision survived",
+        })
+
+    for index, decision in enumerate(decisions):
         if decision.get("status") != "PLANNED":
             continue
         state = str(decision.get("state", "CONTEXT")).upper()
@@ -92,13 +136,16 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
         "status": "PASS" if not errors else "FAIL",
         "errors": errors,
         "warnings": warnings,
-        "planned_count": sum(1 for d in plan.get("decisions", []) if d.get("status") == "PLANNED"),
+        "decision_count": len(decisions),
+        "planned_count": len(planned),
+        "visible_change_count": len(visible),
+        "accent_intent_count": len(accent_intents),
         "cadence_request_count": len(plan.get("cadence_requests", [])),
     }
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="QC Montaj v1.7 Lite crop plan")
+    parser = argparse.ArgumentParser(description="QC Montaj v1.7.1 Lite crop plan")
     parser.add_argument("plan_json")
     args = parser.parse_args(argv)
     plan = json.loads(Path(args.plan_json).read_text(encoding="utf-8"))
