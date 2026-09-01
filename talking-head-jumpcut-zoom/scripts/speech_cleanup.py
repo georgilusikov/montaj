@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """
 Strict Speech Cleanup & Jumpcut Planner (Phase 1).
-Removes dead air (>500ms -> ~180ms) without removing spoken words or fillers.
-Features:
-1. Acoustic safety padding (+40ms pre-roll, +60ms post-roll) to protect plosive consonants and formant decays.
-2. 15ms audio micro-crossfades on jumpcuts.
-3. Remapping words to output dense timeline.
-4. Export to chunked SRT (1-3 words per card) for external NLE / CapCut workflow.
+
+Removes dead air (> cut_threshold_ms) while preserving every spoken word.
+The canonical contract is based on true word boundaries:
+- short pauses are kept untouched;
+- long pauses are reduced to target_gap_ms;
+- head/tail padding is measured from the first/last spoken word;
+- output words are remapped to the dense timeline with source-time provenance.
+
+word_pre_pad_ms / word_post_pad_ms remain in config for downstream acoustic
+safety metadata, but they do not distort pause classification or the exact
+target gap.
 """
 from __future__ import annotations
 
@@ -21,8 +26,8 @@ TARGET_GAP_DEFAULT_MS = 180
 HEAD_PAD_DEFAULT_MS = 120
 TAIL_PAD_DEFAULT_MS = 350
 AUDIO_FADE_DEFAULT_MS = 15
-WORD_PRE_PAD_MS = 40   # Plosive protection
-WORD_POST_PAD_MS = 60  # Formant decay protection
+WORD_PRE_PAD_MS = 40
+WORD_POST_PAD_MS = 60
 
 
 def _format_srt_time(ms: int) -> str:
@@ -34,14 +39,11 @@ def _format_srt_time(ms: int) -> str:
 
 
 def export_srt(output_words: list[dict[str, Any]], srt_path: str | Path, max_words_per_card: int = 3) -> None:
-    """
-    Generate clean, chunked SRT subtitles (1-3 words per card) on dense output timeline.
-    """
     cards: list[tuple[int, int, str]] = []
     current_chunk: list[dict[str, Any]] = []
 
-    for w in output_words:
-        current_chunk.append(w)
+    for word in output_words:
+        current_chunk.append(word)
         if len(current_chunk) >= max_words_per_card:
             start_ms = int(current_chunk[0]["start_ms"])
             end_ms = int(current_chunk[-1]["end_ms"])
@@ -65,6 +67,25 @@ def export_srt(output_words: list[dict[str, Any]], srt_path: str | Path, max_wor
     Path(srt_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _speech_blocks(words: list[dict[str, Any]], cut_threshold_ms: int) -> list[tuple[int, int]]:
+    blocks: list[tuple[int, int]] = []
+    for word in words:
+        start = int(word["start_ms"])
+        end = int(word["end_ms"])
+        if end < start:
+            raise ValueError(f"invalid word timing: {start}..{end}")
+        if not blocks:
+            blocks.append((start, end))
+            continue
+        prev_start, prev_end = blocks[-1]
+        gap = start - prev_end
+        if gap <= cut_threshold_ms:
+            blocks[-1] = (prev_start, max(prev_end, end))
+        else:
+            blocks.append((start, end))
+    return blocks
+
+
 def plan_cleanup(payload: dict[str, Any]) -> dict[str, Any]:
     source = dict(payload.get("source") or {})
     duration_ms = int(source.get("duration_ms", 0))
@@ -75,122 +96,120 @@ def plan_cleanup(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(f"Only strict mode is supported in Lite, got: {mode}")
 
     cut_threshold_ms = int(config.get("cut_threshold_ms", CUT_THRESHOLD_DEFAULT_MS))
-    target_gap_ms = int(config.get("target_gap_ms", TARGET_GAP_DEFAULT_MS))
-    head_pad_ms = int(config.get("head_pad_ms", HEAD_PAD_DEFAULT_MS))
-    tail_pad_ms = int(config.get("tail_pad_ms", TAIL_PAD_DEFAULT_MS))
-    audio_fade_ms = int(config.get("audio_fade_ms", AUDIO_FADE_DEFAULT_MS))
-    word_pre_pad_ms = int(config.get("word_pre_pad_ms", WORD_PRE_PAD_MS))
-    word_post_pad_ms = int(config.get("word_post_pad_ms", WORD_POST_PAD_MS))
+    target_gap_ms = max(0, int(config.get("target_gap_ms", TARGET_GAP_DEFAULT_MS)))
+    head_pad_ms = max(0, int(config.get("head_pad_ms", HEAD_PAD_DEFAULT_MS)))
+    tail_pad_ms = max(0, int(config.get("tail_pad_ms", TAIL_PAD_DEFAULT_MS)))
+    audio_fade_ms = max(0, int(config.get("audio_fade_ms", AUDIO_FADE_DEFAULT_MS)))
+    word_pre_pad_ms = max(0, int(config.get("word_pre_pad_ms", WORD_PRE_PAD_MS)))
+    word_post_pad_ms = max(0, int(config.get("word_post_pad_ms", WORD_POST_PAD_MS)))
 
     raw_words = list(payload.get("words") or [])
     if not raw_words:
-        # No speech detected: keep entire source
         return {
-            "version": "1.7-lite",
+            "version": "1.7.1-lite",
             "source_duration_ms": duration_ms,
             "output_duration_ms": duration_ms,
-            "kept_segments": [{"id": "seg_000", "src_start_ms": 0, "src_end_ms": duration_ms, "out_start_ms": 0, "out_end_ms": duration_ms}],
+            "config": {
+                "mode": mode,
+                "cut_threshold_ms": cut_threshold_ms,
+                "target_gap_ms": target_gap_ms,
+                "head_pad_ms": head_pad_ms,
+                "tail_pad_ms": tail_pad_ms,
+                "audio_fade_ms": audio_fade_ms,
+                "word_pre_pad_ms": word_pre_pad_ms,
+                "word_post_pad_ms": word_post_pad_ms,
+            },
+            "kept_segments": [
+                {
+                    "id": "seg_000",
+                    "src_start_ms": 0,
+                    "src_end_ms": duration_ms,
+                    "out_start_ms": 0,
+                    "out_end_ms": duration_ms,
+                    "dur_ms": duration_ms,
+                }
+            ],
             "removed_gaps": [],
             "content_cuts_ms": [],
             "output_words": [],
         }
 
-    # Sort words by start time
-    words = sorted(raw_words, key=lambda w: int(w["start_ms"]))
+    words = sorted((dict(w) for w in raw_words), key=lambda w: int(w["start_ms"]))
+    blocks = _speech_blocks(words, cut_threshold_ms)
 
-    # Apply acoustic protection paddings
-    padded_intervals: list[tuple[int, int]] = []
-    for w in words:
-        s = max(0, int(w["start_ms"]) - word_pre_pad_ms)
-        e = min(duration_ms if duration_ms > 0 else 10**9, int(w["end_ms"]) + word_post_pad_ms)
-        padded_intervals.append((s, e))
-
-    # Merge overlapping/close word intervals (< cut_threshold_ms)
-    merged_blocks: list[tuple[int, int]] = []
-    for s, e in padded_intervals:
-        if not merged_blocks:
-            merged_blocks.append((s, e))
-        else:
-            prev_s, prev_e = merged_blocks[-1]
-            gap = s - prev_e
-            if gap <= cut_threshold_ms:
-                merged_blocks[-1] = (prev_s, max(prev_e, e))
-            else:
-                merged_blocks.append((s, e))
-
-    # Construct kept segments with head/tail pads and target gap reduction
     kept_segments: list[dict[str, Any]] = []
     removed_gaps: list[dict[str, Any]] = []
     content_cuts_ms: list[int] = []
-
     out_cursor = 0
+    left_gap = target_gap_ms // 2
 
-    first_block_start = merged_blocks[0][0]
-    seg_start = max(0, first_block_start - head_pad_ms)
-
-    for idx, (block_start, block_end) in enumerate(merged_blocks):
+    for idx, (block_start, block_end) in enumerate(blocks):
         if idx == 0:
-            current_src_start = seg_start
+            src_start = max(0, block_start - head_pad_ms)
         else:
-            current_src_start = block_start - (target_gap_ms // 2)
+            src_start = max(0, block_start - left_gap)
 
-        if idx + 1 < len(merged_blocks):
-            next_block_start = merged_blocks[idx + 1][0]
-            current_src_end = block_end + (target_gap_ms - target_gap_ms // 2)
-            gap_src_start = current_src_end
-            gap_src_end = next_block_start - (target_gap_ms // 2)
-        else:
-            current_src_end = min(duration_ms if duration_ms > 0 else block_end + tail_pad_ms, block_end + tail_pad_ms)
-            gap_src_start = current_src_end
-            gap_src_end = duration_ms
+        if idx + 1 < len(blocks):
+            next_start, _ = blocks[idx + 1]
+            original_gap_ms = max(0, next_start - block_end)
+            remaining_gap_ms = min(target_gap_ms, original_gap_ms)
 
-        seg_dur = current_src_end - current_src_start
-        if seg_dur > 0:
-            if kept_segments:
-                content_cuts_ms.append(out_cursor)
+            keep_before_next = min(left_gap, remaining_gap_ms)
+            keep_after_current = remaining_gap_ms - keep_before_next
+            src_end = block_end + keep_after_current
 
-            seg_info = {
-                "id": f"seg_{len(kept_segments):03d}",
-                "src_start_ms": current_src_start,
-                "src_end_ms": current_src_end,
-                "out_start_ms": out_cursor,
-                "out_end_ms": out_cursor + seg_dur,
-                "dur_ms": seg_dur,
-            }
-            kept_segments.append(seg_info)
-            out_cursor += seg_dur
+            removed_src_start = src_end
+            removed_src_end = next_start - keep_before_next
+            removed_ms = max(0, removed_src_end - removed_src_start)
 
-        if idx + 1 < len(merged_blocks) and gap_src_end > gap_src_start:
             removed_gaps.append({
-                "src_start_ms": gap_src_start,
-                "src_end_ms": gap_src_end,
-                "dur_ms": gap_src_end - gap_src_start,
+                "src_start_ms": removed_src_start,
+                "src_end_ms": removed_src_end,
+                "original_gap_ms": original_gap_ms,
+                "remaining_gap_ms": remaining_gap_ms,
+                "removed_ms": removed_ms,
+                "dur_ms": removed_ms,
             })
+        else:
+            upper = duration_ms if duration_ms > 0 else block_end + tail_pad_ms
+            src_end = min(upper, block_end + tail_pad_ms)
 
-    output_duration_ms = out_cursor
+        seg_dur = max(0, src_end - src_start)
+        if kept_segments:
+            content_cuts_ms.append(out_cursor)
 
-    # Remap words to output time
+        kept_segments.append({
+            "id": f"seg_{idx:03d}",
+            "src_start_ms": src_start,
+            "src_end_ms": src_end,
+            "out_start_ms": out_cursor,
+            "out_end_ms": out_cursor + seg_dur,
+            "dur_ms": seg_dur,
+        })
+        out_cursor += seg_dur
+
     output_words: list[dict[str, Any]] = []
-    for w in words:
-        w_start = int(w["start_ms"])
-        w_end = int(w["end_ms"])
-        # Find which kept segment contains this word
+    for word in words:
+        source_start = int(word["start_ms"])
+        source_end = int(word["end_ms"])
         for seg in kept_segments:
-            if seg["src_start_ms"] <= w_start and w_end <= seg["src_end_ms"]:
+            if seg["src_start_ms"] <= source_start and source_end <= seg["src_end_ms"]:
                 offset = seg["out_start_ms"] - seg["src_start_ms"]
                 output_words.append({
-                    "text": w.get("text", ""),
-                    "start_ms": w_start + offset,
-                    "end_ms": w_end + offset,
-                    "src_start_ms": w_start,
-                    "src_end_ms": w_end,
+                    "text": word.get("text", ""),
+                    "start_ms": source_start + offset,
+                    "end_ms": source_end + offset,
+                    "source_start_ms": source_start,
+                    "source_end_ms": source_end,
+                    "src_start_ms": source_start,
+                    "src_end_ms": source_end,
                 })
                 break
 
     return {
-        "version": "1.7-lite",
+        "version": "1.7.1-lite",
         "source_duration_ms": duration_ms,
-        "output_duration_ms": output_duration_ms,
+        "output_duration_ms": out_cursor,
         "config": {
             "mode": mode,
             "cut_threshold_ms": cut_threshold_ms,
@@ -235,7 +254,6 @@ def render_cleanup(
         filter_complex_parts.append(
             f"[0:v]trim=start={s_sec:.3f}:end={e_sec:.3f},setpts=PTS-STARTPTS[{v_label}]"
         )
-        # Apply micro-crossfades to audio to prevent zero-crossing pops
         filter_complex_parts.append(
             f"[0:a]atrim=start={s_sec:.3f}:end={e_sec:.3f},asetpts=PTS-STARTPTS,"
             f"afade=t=in:ss=0:d={fade_s:.3f},afade=t=out:st={max(0.0, dur_sec - fade_s):.3f}:d={fade_s:.3f}[{a_label}]"
