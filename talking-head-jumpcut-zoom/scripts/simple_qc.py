@@ -27,7 +27,6 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
     absolute_cap = min(float(config.get("absolute_zoom_cap", DEFAULT_ABSOLUTE_ZOOM_CAP)), DEFAULT_ABSOLUTE_ZOOM_CAP)
     require_visible_after_ms = int(config.get("require_visible_framing_after_ms", DEFAULT_REQUIRE_VISIBLE_AFTER_MS))
     allow_no_visible = bool(config.get("allow_no_visible_framing", False))
-    # Production is fail-closed by default. Unit/planner-only calls must opt out explicitly.
     semantic_contract_required = bool(config.get("semantic_contract_required", True))
 
     state_caps = dict(DEFAULT_STATE_CAP)
@@ -62,8 +61,6 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
                 "reason": "semantic pass produced zero visible crop/zoom changes",
             })
 
-    # Once ARGUMENT/EMPHASIS intent exists, a complete collapse to zero visible
-    # changes is never a successful zoom plan, even in planner-only mode.
     if accent_intents and not visible:
         errors.append({
             "check": "semantic_accent_became_noop",
@@ -136,6 +133,8 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
         })
 
     return {
+        "version": "1.7.2-lite",
+        "stage": "pre-render-qc",
         "status": "PASS" if not errors else "FAIL",
         "errors": errors,
         "warnings": warnings,
@@ -148,12 +147,16 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="QC Montaj v1.7.1 Lite crop plan")
+    parser = argparse.ArgumentParser(description="QC Montaj v1.7.2 Lite crop plan")
     parser.add_argument("plan_json")
+    parser.add_argument("--output-json", help="Persist QC receipt for pipeline_guard.py")
     args = parser.parse_args(argv)
     plan = json.loads(Path(args.plan_json).read_text(encoding="utf-8"))
     report = check(plan)
-    print(json.dumps(report, ensure_ascii=False, indent=2))
+    text = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
+    if args.output_json:
+        Path(args.output_json).write_text(text, encoding="utf-8")
+    print(text, end="")
     return 0 if report["status"] == "PASS" else 2
 
 
