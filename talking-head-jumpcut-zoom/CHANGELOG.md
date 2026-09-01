@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.2-lite] - 2026-09-01
+
+### Added
+- `visual_scan.py`: executable dense-video perception pass. It samples the actual video and emits planner-ready face geometry, blur and optical-flow observations; MediaPipe FaceMesh is preferred when available with OpenCV Haar fallback.
+- `visual_evidence.py`: deterministic extraction of frames around every content jumpcut, visible semantic reframe and return-to-context change for actual vision/human review.
+- `pipeline_guard.py`: fail-closed pre-render and final acceptance gates that require canonical artifacts, machine visual observations, QC receipts and complete visual-review receipts.
+- `test_pipeline_lock_and_visual_evidence.py`: regressions for transcript-only bypass, missing visual review, renderer guard validation and final visual acceptance.
+
+### Changed
+- `render_zoom.py` now requires a PASS `pipeline_guard.py pre-render` receipt in production; the explicit unsafe bypass is debug/unit-only. FFmpeg progress is exposed directly and the default x264 preset is `fast` rather than `medium`.
+- `simple_qc.py` and `post_render_qc.py` can persist JSON receipts with `--output-json` for machine-verifiable pipeline provenance.
+- `SKILL.md` now distinguishes machine perception from actual frame inspection and explicitly forbids claims that the video was visually checked based only on ffprobe/Whisper/RMS.
+- `SKILL.md` forbids ad-hoc replacement production scripts (`run_full_montage.py`, custom planner/renderer, etc.) when a canonical stage exists.
+- Caption export remains in scope, but inventing looped-PNG subtitle compositors inside a zoom run is explicitly out of scope unless a separate canonical subtitle renderer is requested/available.
+
+### Fixed
+- Closed the documentation-only `frame_defects/perception` gap: the pipeline now has a real canonical `video -> observations` stage.
+- Closed the production bypass where an agent could read the skill, skip canonical stages, create its own montage script and still describe the result as a skill-compliant render.
+- Closed the visual-evidence gap where transcript/audio analysis could be incorrectly described as watching the video.
+- Preserved an explicit editorial no-zoom path while continuing to fail on silent/missing zoom execution.
+
+## [1.7.1-lite] - 2026-09-01
+
+### Added
+- `semantic_events.py`: mandatory deterministic bridge from agent/LLM semantic WHY (`semantic_marks`) to dense-timeline `semantic_events` and word-boundary candidates.
+- `post_render_qc.py`: pixel-level verification that `final.mp4` actually contains the crop/zoom declared in `zoom_plan.json`.
+- `test_semantic_contract.py`: regression coverage for empty semantics, semantic no-op, deterministic word-index timing, explicit no-zoom override, and render-frame comparison helper.
+
+### Changed
+- `SKILL.md` now forbids direct `zoom_planner.py` execution before semantic marks and forbids ad-hoc replacement planners/build-analysis scripts during production runs.
+- `simple_qc.py` is fail-closed for long edits: missing semantic decisions, zero visible framing changes, and ARGUMENT/EMPHASIS intent collapsing to no-op are errors.
+- Acceptance now requires both pre-render plan QC and post-render pixel QC.
+
+### Fixed
+- Long talking-head videos can no longer silently render at a constant 100% crop and still receive QC PASS when semantic framing was expected.
+- The previously implicit/missing `semantic_events` producer is now an explicit pipeline stage with a validated schema.
+
 ## [1.4.1] - 2026-08-28
 
 ### Changed
