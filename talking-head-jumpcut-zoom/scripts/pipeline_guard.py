@@ -1,12 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed production gate for the canonical Montaj pipeline.
-
-Two stages are supported:
-- pre-render: proves canonical pacing/family analysis + semantics + visual evidence exist.
-- final: proves post-render pixel QC + final visual review exist before acceptance.
-
-This does not replace human/agent judgment; it makes missing evidence explicit.
-"""
+"""Fail-closed production gate for the canonical Montaj pipeline."""
 from __future__ import annotations
 
 import argparse
@@ -14,7 +7,9 @@ import json
 from pathlib import Path
 from typing import Any
 
-VERSION = "1.7.5-lite"
+VERSION = "1.7.6-lite"
+SEMANTIC_VERSION_PREFIX = "1.7.6"
+ZOOM_VERSION_PREFIX = "1.7.6"
 
 
 def _event_count(semantic: dict[str, Any]) -> int:
@@ -59,7 +54,11 @@ def _check_visual_review(
         errors.append({"check": f"{label}_visual_receipt_failed"})
 
 
-def _check_family_gate(cleanup: dict[str, Any], errors: list[dict[str, Any]], warnings: list[dict[str, Any]]) -> tuple[str, bool]:
+def _check_family_gate(
+    cleanup: dict[str, Any],
+    errors: list[dict[str, Any]],
+    warnings: list[dict[str, Any]],
+) -> tuple[str, bool]:
     family = str(cleanup.get("family") or "").upper()
     if family not in {"A", "B", "C"}:
         errors.append({"check": "family_gate_missing", "reason": "cleanup must record family A/B/C"})
@@ -106,6 +105,25 @@ def check_pre_render(
 
     if not str(cleanup.get("version", "")).startswith("1.7"):
         errors.append({"check": "cleanup_provenance_missing"})
+    if not str(semantic.get("version", "")).startswith(SEMANTIC_VERSION_PREFIX):
+        errors.append({
+            "check": "semantic_version_mismatch",
+            "expected": f"{SEMANTIC_VERSION_PREFIX}*",
+            "actual": semantic.get("version"),
+        })
+    if not str(zoom_plan.get("version", "")).startswith(ZOOM_VERSION_PREFIX):
+        errors.append({
+            "check": "zoom_plan_version_mismatch",
+            "expected": f"{ZOOM_VERSION_PREFIX}*",
+            "actual": zoom_plan.get("version"),
+        })
+    if str(pre_qc.get("version", "")).strip() and not str(pre_qc.get("version", "")).startswith(ZOOM_VERSION_PREFIX):
+        errors.append({
+            "check": "pre_qc_version_mismatch",
+            "expected": f"{ZOOM_VERSION_PREFIX}*",
+            "actual": pre_qc.get("version"),
+        })
+
     if not cleanup.get("output_words"):
         errors.append({"check": "cleanup_output_words_missing"})
     if "content_cuts_ms" not in cleanup:
@@ -149,6 +167,8 @@ def check_pre_render(
             "pause_cleanup_enabled": cleanup_enabled,
             "content_cut_count": len(cleanup.get("content_cuts_ms") or []),
             "semantic_event_count": _event_count(semantic),
+            "semantic_version": semantic.get("version"),
+            "zoom_plan_version": zoom_plan.get("version"),
             "visual_observation_count": len(observations),
             "face_coverage": coverage,
             "pre_qc_status": pre_qc.get("status"),
