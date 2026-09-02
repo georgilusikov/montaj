@@ -40,6 +40,7 @@ def event(event_id, at_ms, importance, *, block_id="b", direction=None, duration
         "block_id": block_id,
         "importance": importance,
         "semantic_importance": importance,
+        "accent_word": "key",
         "boundary_candidates": [
             {
                 "id": f"{event_id}_b",
@@ -69,72 +70,88 @@ def payload(duration_ms=16000, events=None):
     }
 
 
-class EnergyDirectorTests(unittest.TestCase):
-    def test_energy_profile_uses_requested_four_steps(self):
+class ResearchAlignedEnergyDirectorTests(unittest.TestCase):
+    def test_ab_profile_keeps_subtle_steps_and_restores_113_peak(self):
         self.assertEqual(
             ZOOM_LEVELS,
-            {"Z1": 1.03, "Z2": 1.05, "Z3": 1.08, "Z4": 1.12},
+            {"Z1": 1.03, "Z2": 1.05, "Z3": 1.08, "Z4": 1.13},
         )
 
-    def test_first_five_seconds_get_rising_motion_even_without_semantics(self):
+    def test_opening_motion_is_not_mandatory_without_semantics(self):
         result = plan(payload(12000))
-        self.assertEqual(result["version"], "1.7.6-energy")
-        self.assertGreaterEqual(result["intro_energy_events_added"], 1)
-        self.assertEqual(result["intro_energy_movement"], "PASS")
+        self.assertEqual(result["version"], "1.7.6-research-aligned")
+        self.assertEqual(result["intro_energy_events_added"], 0)
+        self.assertEqual(result["energy_checkpoints_added"], 0)
+        self.assertEqual(result["generated_energy_events"], 0)
+        self.assertEqual(result["intro_energy_movement"], "SEMANTIC_ONLY")
+        self.assertFalse(any(d.get("energy_generated") for d in result["decisions"]))
 
-        intro = [
-            d for d in result["decisions"]
-            if d.get("intro_energy") and d.get("status") == "PLANNED"
-        ]
-        self.assertTrue(intro)
-        self.assertTrue(any(int(d["start_ms"]) < 5000 for d in intro))
-        self.assertTrue(all(d.get("zoom_level") in {"Z1", "Z2"} for d in intro))
-        self.assertTrue(any(d.get("motion") == "slow_push" for d in intro))
+    def test_long_static_gap_creates_request_not_camera_move(self):
+        result = plan(payload(14000))
+        self.assertEqual(result["cadence_low_level_changes"], 0)
+        self.assertTrue(result["refresh_requests"])
+        self.assertFalse(any(d.get("cadence_refresh") for d in result["decisions"]))
+        self.assertTrue(all(r.get("semantic_trigger") is False for r in result["refresh_requests"]))
+        self.assertTrue(all(r.get("fallback_action") == "hold" for r in result["refresh_requests"]))
 
-        opening_curve = [
-            p for p in result["editorial_energy_curve"] if int(p["t_ms"]) <= 5000
-        ]
-        energies = [float(p["energy"]) for p in opening_curve]
-        self.assertEqual(energies, sorted(energies))
+    def test_energy_does_not_replace_semantic_importance_as_scale_driver(self):
+        result = plan(payload(12000, [
+            event("base", 3000, 0.50, block_id="arc"),
+            event("rise", 7000, 0.62, block_id="arc"),
+        ]))
+        rise = next(d for d in result["decisions"] if d.get("event_id") == "rise")
+        self.assertEqual(rise.get("zoom_level"), "Z2")
+        self.assertAlmostEqual(float(rise.get("importance")), 0.62, places=4)
+        self.assertEqual(rise.get("energy_role"), "motion_only")
 
-    def test_real_semantic_event_replaces_nearby_synthetic_intro(self):
-        result = plan(payload(10000, [event("hook", 1000, 0.78, block_id="hook")]))
-        ids = {str(p["event_id"]) for p in result["editorial_energy_curve"]}
-        self.assertIn("hook", ids)
-        self.assertNotIn("energy_intro_1", ids)
-
-    def test_rising_energy_prefers_slow_push_but_peak_stays_step(self):
-        result = plan(payload(18000, [
-            event("base", 7000, 0.60, block_id="arc"),
-            event("rise", 11000, 0.74, block_id="arc"),
-            event("peak", 15000, 0.95, block_id="arc", direction="peak"),
+    def test_gradual_energy_rise_prefers_slow_push_and_peak_stays_step(self):
+        result = plan(payload(16000, [
+            event("base", 3000, 0.60, block_id="arc", duration_ms=2200),
+            event("rise", 7000, 0.72, block_id="arc", duration_ms=3000),
+            event("peak", 11500, 0.95, block_id="arc", direction="peak", duration_ms=1800),
         ]))
         rise = next(d for d in result["decisions"] if d.get("event_id") == "rise")
         peak = next(d for d in result["decisions"] if d.get("event_id") == "peak")
         self.assertEqual(rise.get("energy_trend"), "rise")
         self.assertEqual(rise.get("motion"), "slow_push")
+        self.assertGreaterEqual(int(rise.get("slow_push_settle_ms", 0)), 900)
         self.assertEqual(peak.get("zoom_level"), "Z4")
         self.assertEqual(peak.get("motion"), "step")
-        self.assertLessEqual(float(peak.get("scale", 1.0)), 1.12)
+        self.assertLessEqual(float(peak.get("scale", 1.0)), 1.13)
 
-    def test_generated_energy_checkpoint_never_creates_z4(self):
-        result = plan(payload(22000, [
-            event("early", 6000, 0.80, block_id="a"),
-            event("late", 20000, 0.90, block_id="b"),
+    def test_sharp_energy_rise_is_step_not_slow_push(self):
+        result = plan(payload(12000, [
+            event("base", 3000, 0.45, block_id="a"),
+            event("jump", 7000, 0.90, block_id="b"),
         ]))
-        generated = [
-            d for d in result["decisions"]
-            if d.get("energy_generated") and not d.get("intro_energy")
-        ]
-        self.assertTrue(generated)
-        self.assertTrue(all(d.get("zoom_level") != "Z4" for d in generated))
+        jump = next(d for d in result["decisions"] if d.get("event_id") == "jump")
+        self.assertEqual(jump.get("energy_trend"), "rise_fast")
+        self.assertEqual(jump.get("motion"), "step")
 
-    def test_energy_plan_still_passes_v176_qc(self):
-        result = plan(payload(14000))
+    def test_real_peak_can_arrive_inside_old_three_second_floor(self):
+        result = plan(payload(10000, [
+            event("argument", 4000, 0.62, block_id="arc"),
+            event("peak", 5800, 0.95, block_id="arc", direction="peak"),
+        ]))
+        argument = next(d for d in result["decisions"] if d.get("event_id") == "argument")
+        peak = next(d for d in result["decisions"] if d.get("event_id") == "peak")
+        self.assertNotEqual(argument.get("motion"), "hold")
+        self.assertNotEqual(peak.get("motion"), "hold")
+        gap = int(peak["start_ms"]) - int(argument["start_ms"])
+        self.assertGreaterEqual(gap, 1200)
+        self.assertLess(gap, 3000)
+
+    def test_semantic_plan_passes_qc_with_113_artistic_cap(self):
+        result = plan(payload(12000, [
+            event("argument", 3000, 0.70, block_id="a"),
+            event("peak", 7500, 0.95, block_id="b", direction="peak"),
+        ]))
         report = check(result)
         self.assertEqual(report["status"], "PASS", report)
-        self.assertLessEqual(result["config"]["absolute_zoom_cap"], 1.12)
-        self.assertEqual(result["config"]["energy_cadence_role"], "guard_rail_only")
+        self.assertEqual(result["config"]["absolute_zoom_cap"], 1.13)
+        self.assertEqual(result["config"]["editorial_energy_role"], "motion_only")
+        self.assertFalse(result["config"]["mandatory_opening_motion"])
+        self.assertFalse(result["config"]["cadence_materializes_zoom"])
 
 
 if __name__ == "__main__":
