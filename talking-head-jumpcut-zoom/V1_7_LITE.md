@@ -1,165 +1,106 @@
-# Talking-Head Jumpcut & Zoom Editor v1.7.5 Lite
+# Talking-Head Jumpcut & Zoom Editor v1.7.6 Lite
 
-This document is the compact engineering contract. `SKILL.md` is the production-agent instruction.
+This is the compact engineering contract. `SKILL.md` is the canonical production-agent instruction.
 
-## Goal
+## Architecture
 
-Keep v1.7.2 fail-closed reliability while restoring restrained gold/early-v1.x directing:
-
-```text
-WHAT + bounded HOW -> editorial salience
-```
-
-Performance can amplify an existing semantic beat, but it cannot create WHY.
-
-## Pipeline
+v1.7.6 remains a thin Reels adapter over the stable v1.7.5 pipeline:
 
 ```text
-normalize_source.py
-→ Whisper words
-→ speech_cleanup.py [family gate A/B/C + pacing]
-→ visual_scan.py
-→ agent semantic_marks
-→ semantic_events.py
-→ analysis.json
-→ zoom_planner.py
-→ simple_qc.py
-→ visual_evidence.py + real visual review
-→ pipeline_guard.py pre-render
-→ render_zoom.py
-→ post_render_qc.py
-→ final visual evidence/review
-→ pipeline_guard.py final
+normalize -> Whisper -> speech_cleanup v1.7.5 -> visual_scan
+-> semantic_events_v176 -> zoom_planner_v176 -> QC/review -> render -> pixel/final QC
 ```
 
-## Pacing families
+Pause cleanup, geometry, renderer and visual evidence are unchanged from v1.7.5.
 
-### A — dense
-
-AUTO ambiguous → A. Default `pause_cleanup_enabled=false`.
-
-### B — air
-
-AUTO B requires repeated air:
+## Reels framing grammar
 
 ```text
->=2 raw word gaps >450 ms
-OR
->=4 raw word gaps >300 ms
+HOME 1.00
+Z1   1.03
+Z2   1.06
+Z3   1.09
+Z4   1.13
+HARD CAP 1.13
 ```
 
-Default:
+Cadence may use only Z1/Z2. Z3 is a semantic punch. Z4 is reserved for raw semantic importance >=0.90 or explicit `peak` / `ratchet_3`.
+
+Performance remains a bounded amplifier (+0.08 max) but cannot create WHY or manufacture Z4 by itself.
+
+## Rhythm
 
 ```text
-cut_threshold_ms=250
-target_gap_ms=180
+minimum visible framing gap: ~2.0 s
+preferred:                   ~3.5 s
+maximum before soft refresh: ~5.0 s
 ```
 
-### C — explicit second take / CTA
-
-Owner-supplied only. Body cleanup off by default.
-
-`250 ms` is no longer a global default. Generic fail-safe default remains 500 ms, but canonical B explicitly resolves to 250 ms.
-
-No ad-hoc RMS/VAD refinement is allowed until a canonical acoustic detector exists.
+Too-close semantic changes are coalesced; the stronger beat wins. A HOME return that would only flash briefly before the next framing change is suppressed.
 
 ## Semantic contract
 
-Required semantic mark:
-
-```json
-{
-  "start_word": 10,
-  "end_word": 15,
-  "importance": 0.72,
-  "why": "thesis payoff"
-}
-```
-
-Optional performance fields:
-
-```json
-{
-  "performance_emphasis": 0.9,
-  "performance_evidence": "speaker leans in and delivery energy rises"
-}
-```
-
-Rules:
-
-- semantic importance `<0.40` gets no performance bonus;
-- performance bonus max `+0.08`;
-- performance evidence is required when performance_emphasis > 0;
-- gaze/head movement alone is never WHY.
-
-## Gold-lite framing
+For non-release events with raw importance >=0.40:
 
 ```text
-CONTEXT    1.00
-ARGUMENT   1.08
-EMPHASIS   1.12
-RATCHET_1  1.08
-RATCHET_2  1.12
-RATCHET_3  1.16
-HARD CAP   1.20
+WHY + block_id + accent_word are mandatory
 ```
 
-Most runtime stays at CONTEXT.
+Legacy fallbacks are allowed only with explicit `allow_legacy_semantic_defaults=true`.
 
-Episode durations:
+`accent_word` owns the semantic target. Safe boundary selection may move WHEN but may not change `semantic_duration_ms`.
+
+## Episode rules
 
 ```text
-micro_punch    0.5–1.2 s
-beat           1.2–2.0 s
-argument_hold  2.0–2.5 s rare
+same block + same level -> HOLD
+same block + escalation -> direct Z1/Z2 -> Z3 -> Z4 progression
+new separated thought / release -> HOME when it can remain visible long enough
 ```
 
-## Dramatic continuity
+Visible semantic framing has a ~2 s dwell floor to prevent short 0.5–1.2 s zoom flashes.
 
-Do not force return-to-home between every adjacent semantic beat.
+## Slow push
 
-```text
-same coherent thought:
-1.00 → 1.08 build → 1.12 peak → 1.00 release
-```
-
-Reset to CONTEXT on a new block/release. A standalone compact punch normally returns home.
-
-## Density
-
-Observed gold density around one visible semantic punch per ~7 s is a **ceiling/warning**, never a target or quota.
-
-```text
-elapsed time ≠ WHY
-```
-
-Do not manufacture zooms to satisfy density.
+Slow push must leave at least 300 ms settled on the target. If there is no room, use STEP.
 
 ## Safety
 
-Boundary hard rejects:
+The unchanged v1.7.5 core still enforces:
 
-- blink/eye closure;
-- blur;
-- unsafe head pose/turn;
-- gesture/prop conflict;
-- crop/headroom/face-travel violation.
+- Tripod Lock;
+- global optical/eye-line anchor;
+- face travel and crop safety;
+- gesture/prop/caption protection;
+- segment-wide >=5% headroom when hair evidence exists;
+- blur/blink/pose/motion rejection;
+- quality cap.
 
-Soft bonuses may include word boundary, pause, head return and cadence fit.
+Safety can reduce or veto every requested zoom.
 
-## Acceptance
+## Frequency
 
-A production result is accepted only after:
+Do not hard-code a Z4-per-minute quota. `rhythm_summary` records Z1/Z2/Z3/Z4 counts, framing changes/minute, median gap and minimum gap for gold-video calibration.
+
+## Provenance
+
+Production guard requires:
 
 ```text
-pre-QC PASS
-+ family provenance
-+ machine visual observations
-+ actual selected-frame review
-+ guarded render
-+ post-render pixel QC PASS
-+ final visual review
-+ final guard PASS
+semantic artifact: 1.7.6*
+zoom plan:         1.7.6*
+pre-QC:            1.7.6* when version is present
 ```
 
-No canonical stage may be silently replaced by an agent-written production equivalent.
+The unchanged pacing artifact may remain `1.7.5-lite`; visual scan remains the established 1.7.2-compatible perception stage.
+
+## Intentionally deferred
+
+- per-gap semantic pause rewrite;
+- rolling density controller;
+- visual fatigue score;
+- per-level frequency quota;
+- new LLM pass;
+- new renderer/pipeline stage.
+
+Validate this zoom/rhythm change on real Reels before adding another system.
