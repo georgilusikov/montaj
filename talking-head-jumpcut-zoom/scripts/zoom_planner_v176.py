@@ -1,653 +1,407 @@
 #!/usr/bin/env python3
-"""v1.7.6 Reels cadence adapter over the unchanged v1.7.5 zoom_planner."""
+"""v1.7.6 Reels adapter over the unchanged v1.7.5 zoom planner."""
 from __future__ import annotations
-
-import argparse
-import copy
-import json
+import argparse, copy, json
 from pathlib import Path
 from statistics import median
 from typing import Any
-
 import zoom_planner as core
 
 VERSION = "1.7.6-lite"
-SAME_BLOCK_CONTINUATION_MS = 1200
-
-REELS_HOME_SCALE = 1.00
+HOME = 1.00
 ZOOM_LEVELS = {"Z1": 1.03, "Z2": 1.06, "Z3": 1.09, "Z4": 1.13}
-REELS_ABSOLUTE_CAP = ZOOM_LEVELS["Z4"]
-CADENCE_MAX_LEVEL = "Z2"
-
-Z2_IMPORTANCE = 0.55
-Z3_IMPORTANCE = 0.72
-Z4_IMPORTANCE = 0.85
-
-MIN_CHANGE_GAP_MS = 2000
-PREFERRED_CHANGE_GAP_MS = 3500
-MAX_CHANGE_GAP_MS = 5000
-
 LEVEL_FALLBACKS = {
-    "Z1": (1.03, 1.02),
-    "Z2": (1.06, 1.05, 1.04),
-    "Z3": (1.09, 1.08, 1.07),
-    "Z4": (1.13, 1.12, 1.11, 1.10),
+    "Z1": (1.03, 1.02), "Z2": (1.06, 1.05, 1.04),
+    "Z3": (1.09, 1.08, 1.07), "Z4": (1.13, 1.12, 1.11, 1.10),
 }
+ABS_CAP = 1.13
+CADENCE_MAX_LEVEL = "Z2"
+Z2_IMPORTANCE, Z3_IMPORTANCE, Z4_RAW_IMPORTANCE = 0.55, 0.72, 0.90
+MIN_GAP_MS, PREFERRED_GAP_MS, MAX_GAP_MS = 2000, 3500, 5000
+SAME_BLOCK_MS = 1200
+MIN_SETTLE_MS, MIN_PUSH_MS = 300, 400
+LEVEL_RANK = {"Z1": 1, "Z2": 2, "Z3": 3, "Z4": 4}
 
 
-def _semantic_zoom_duration(event: dict[str, Any], start_ms: int) -> tuple[str, int]:
-    explicit = str(event.get("zoom_duration_type") or "").strip().lower()
-    if "semantic_duration_ms" in event:
-        raw_ms = max(0, int(event.get("semantic_duration_ms") or 0))
-    else:
-        semantic_start_ms = int(event.get("semantic_start_ms", event.get("t_ms", start_ms)))
-        raw_ms = max(0, int(event.get("end_ms", semantic_start_ms)) - semantic_start_ms)
-
+def _duration(event: dict[str, Any], start_ms: int) -> tuple[str, int]:
+    explicit = str(event.get("zoom_duration_type") or "").lower()
+    raw = int(event.get("semantic_duration_ms") or 0)
+    if raw <= 0:
+        semantic_start = int(event.get("semantic_start_ms", event.get("t_ms", start_ms)))
+        raw = max(0, int(event.get("end_ms", semantic_start)) - semantic_start)
     if explicit in core.ZOOM_DURATION_BANDS_MS:
         kind = explicit
-    elif raw_ms and raw_ms < 1500:
+    elif raw and raw < 1500:
         kind = "micro_punch"
-    elif raw_ms and raw_ms < 2500:
+    elif raw and raw < 2500:
         kind = "beat"
-    elif raw_ms:
+    elif raw:
         kind = "argument_hold"
     else:
         kind = "beat"
-
     lo, hi, default = core.ZOOM_DURATION_BANDS_MS[kind]
-    duration = default if raw_ms <= 0 else int(core._clamp(raw_ms, lo, hi))
-    return kind, duration
+    semantic_visual = default if raw <= 0 else int(core._clamp(raw, lo, hi))
+    return kind, max(MIN_GAP_MS, semantic_visual)
 
 
-def _prepare_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    prepared = copy.deepcopy(payload)
-    events = list(prepared.get("semantic_events") or [])
+def _prepare(payload: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    out = copy.deepcopy(payload)
+    events = list(out.get("semantic_events") or [])
     for event in events:
-        if "semantic_start_ms" not in event:
-            event["semantic_start_ms"] = int(event.get("t_ms", 0))
-        if "semantic_duration_ms" not in event:
-            event["semantic_duration_ms"] = max(
-                0,
-                int(event.get("end_ms", event["semantic_start_ms"])) - int(event["semantic_start_ms"]),
-            )
+        event.setdefault("semantic_start_ms", int(event.get("t_ms", 0)))
+        event.setdefault(
+            "semantic_duration_ms",
+            max(0, int(event.get("end_ms", event["semantic_start_ms"])) - int(event["semantic_start_ms"])),
+        )
         if event.get("accent_ms") is not None:
             event["t_ms"] = int(event["accent_ms"])
-    events.sort(key=lambda event: (int(event.get("t_ms", 0)), str(event.get("id", ""))))
-    prepared["semantic_events"] = events
-    return prepared, events
+    events.sort(key=lambda e: (int(e.get("t_ms", 0)), str(e.get("id", ""))))
+    out["semantic_events"] = events
+    return out, events
 
 
-def _planned_by_event(decisions: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    return {
-        str(decision.get("event_id")): decision
-        for decision in decisions
-        if decision.get("status") == "PLANNED"
-    }
+def _scale(crop: list[int] | tuple[int, int, int, int], w: int, h: int) -> float:
+    return min(w / max(int(crop[2]), 1), h / max(int(crop[3]), 1))
 
 
-def _crop_scale(crop: list[int] | tuple[int, int, int, int], width: int, height: int) -> float:
-    _, _, crop_w, crop_h = (int(v) for v in crop)
-    return min(width / max(crop_w, 1), height / max(crop_h, 1))
-
-
-def _is_home_crop(crop: list[int] | tuple[int, int, int, int], width: int, height: int) -> bool:
-    return [int(v) for v in crop] == [0, 0, width, height]
-
-
-def _semantic_level(decision: dict[str, Any]) -> str | None:
-    state = str(decision.get("state", "CONTEXT")).upper()
-    direction = str(decision.get("direction") or "").lower()
-    importance = float(decision.get("importance", decision.get("semantic_importance", 0.0)) or 0.0)
-
-    if state == "CONTEXT" or direction == "release":
+def _semantic_level(d: dict[str, Any]) -> str | None:
+    if str(d.get("state", "CONTEXT")).upper() == "CONTEXT":
         return None
-    if direction == "ratchet_3" or direction == "peak" or state == "EMPHASIS":
+    direction = str(d.get("direction") or "").lower()
+    if direction == "release":
+        return None
+    effective = float(d.get("importance", d.get("semantic_importance", 0.0)) or 0.0)
+    raw = float(d.get("semantic_importance", effective) or 0.0)
+    if direction in {"peak", "ratchet_3"}:
         return "Z4"
     if direction == "ratchet_2":
         return "Z3"
-    if direction == "ratchet_1" or bool(decision.get("soft_build")) or direction == "build":
+    if direction == "ratchet_1" or bool(d.get("soft_build")) or direction == "build":
         return "Z2"
-    if importance >= Z4_IMPORTANCE:
+    if raw >= Z4_RAW_IMPORTANCE:
         return "Z4"
-    if importance >= Z3_IMPORTANCE:
+    if effective >= Z3_IMPORTANCE:
         return "Z3"
-    if importance >= Z2_IMPORTANCE:
+    if effective >= Z2_IMPORTANCE:
         return "Z2"
     return "Z1"
 
 
-def _safe_crop_at_scale(
-    observations: list[dict[str, Any]],
-    *,
-    start_ms: int,
-    end_ms: int,
-    width: int,
-    height: int,
-    window_ms: int,
-    target_scale: float,
-    quality_cap: float,
-    global_anchor: tuple[float, float, float],
-    candidate_scales: tuple[float, ...] | None = None,
+def _safe_crop(
+    observations: list[dict[str, Any]], start: int, end: int, w: int, h: int,
+    window: int, target: float, quality_cap: float, anchor: tuple[float, float, float],
+    candidates: tuple[float, ...],
 ) -> tuple[float, list[int], float | None] | None:
-    if target_scale <= 1.000001:
-        return 1.0, [0, 0, width, height], None
-
-    rows = core._segment_samples(observations, start_ms, end_ms, window_ms)
-    requested = min(float(target_scale), float(quality_cap), REELS_ABSOLUTE_CAP)
-    candidates = candidate_scales or (requested,)
-
-    for scale in candidates:
-        scale = min(float(scale), requested)
-        if scale <= 1.000001:
-            continue
-        crop = core._crop_for_scale_with_anchor(
-            rows,
-            width,
-            height,
-            scale,
-            global_anchor=global_anchor,
-        )
-        safe, _ = core._crop_safe(rows, crop, width, height, scale)
-        if not safe:
-            continue
-        headroom_ratio = core._min_headroom_ratio(rows, crop, height)
-        return (
-            round(scale, 4),
-            list(crop),
-            round(headroom_ratio, 4) if headroom_ratio is not None else None,
-        )
+    rows = core._segment_samples(observations, start, end, window)
+    requested = min(target, quality_cap, ABS_CAP)
+    for candidate in candidates:
+        scale = min(float(candidate), requested)
+        crop = core._crop_for_scale_with_anchor(rows, w, h, scale, global_anchor=anchor)
+        safe, _ = core._crop_safe(rows, crop, w, h, scale)
+        if safe:
+            headroom = core._min_headroom_ratio(rows, crop, h)
+            return round(scale, 4), list(crop), round(headroom, 4) if headroom is not None else None
     return None
 
 
-def _retarget_semantic_scales(result: dict[str, Any], prepared: dict[str, Any]) -> None:
-    width = int(result["source"]["width"])
-    height = int(result["source"]["height"])
-    observations = sorted(list(prepared.get("observations") or []), key=lambda o: int(o["t_ms"]))
-    if not observations:
+def _retarget(result: dict[str, Any], prepared: dict[str, Any]) -> None:
+    w, h = int(result["source"]["width"]), int(result["source"]["height"])
+    obs = sorted(list(prepared.get("observations") or []), key=lambda o: int(o["t_ms"]))
+    if not obs:
         return
-
-    config = dict(result.get("config") or {})
-    window_ms = int(config.get("window_ms", 1200))
-    quality_cap = float(prepared.get("source", {}).get("quality_cap", REELS_ABSOLUTE_CAP))
-    global_anchor = core._get_global_anchor(observations)
-    event_by_id = {str(event.get("id")): event for event in (prepared.get("semantic_events") or [])}
-
-    for decision in result.get("decisions", []):
-        if decision.get("status") != "PLANNED":
+    window = int((result.get("config") or {}).get("window_ms", 1200))
+    quality = float(prepared.get("source", {}).get("quality_cap", ABS_CAP))
+    anchor = core._get_global_anchor(obs)
+    by_id = {str(e.get("id")): e for e in prepared.get("semantic_events", [])}
+    for d in result.get("decisions", []):
+        if d.get("status") != "PLANNED":
             continue
-        event = event_by_id.get(str(decision.get("event_id") or ""), {})
-        semantic_context = dict(decision)
-        if "importance" in event:
-            semantic_context["importance"] = event["importance"]
-            decision["importance"] = event["importance"]
-        if "semantic_importance" in event:
-            semantic_context["semantic_importance"] = event["semantic_importance"]
-            decision["semantic_importance"] = event["semantic_importance"]
-        level = _semantic_level(semantic_context)
-        if level is None:
+        e = by_id.get(str(d.get("event_id") or ""), {})
+        for key in ("importance", "semantic_importance", "semantic_duration_ms"):
+            if key in e:
+                d[key] = e[key]
+        level = _semantic_level(d)
+        if not level:
             continue
-
-        target_scale = ZOOM_LEVELS[level]
-        start_ms = int(decision.get("start_ms", decision.get("event_ms", 0)))
-        end_ms = int(decision.get("end_ms", start_ms))
-        safe = _safe_crop_at_scale(
-            observations,
-            start_ms=start_ms,
-            end_ms=end_ms,
-            width=width,
-            height=height,
-            window_ms=window_ms,
-            target_scale=target_scale,
-            quality_cap=quality_cap,
-            global_anchor=global_anchor,
-            candidate_scales=LEVEL_FALLBACKS[level],
+        safe = _safe_crop(
+            obs, int(d.get("start_ms", 0)), int(d.get("end_ms", d.get("start_ms", 0))),
+            w, h, window, ZOOM_LEVELS[level], quality, anchor, LEVEL_FALLBACKS[level],
         )
-        if safe is None:
+        if safe:
+            d["scale"], d["crop_end"], d["headroom_ratio"] = safe
+            d["zoom_level"] = d["reels_role"] = level
+            d["reels_target_scale"] = d["state_cap"] = ZOOM_LEVELS[level]
+            d["reels_scale_limited"] = float(d["scale"]) + 0.005 < ZOOM_LEVELS[level]
+
+
+def _slow_push_settle(result: dict[str, Any]) -> int:
+    changed = 0
+    for d in result.get("decisions", []):
+        if d.get("status") != "PLANNED" or d.get("motion") != "slow_push":
             continue
+        start, end = int(d.get("start_ms", 0)), int(d.get("end_ms", 0))
+        max_transition = end - start - MIN_SETTLE_MS
+        if max_transition < MIN_PUSH_MS:
+            d["motion"], d["transition_end_ms"] = "step", start
+            d["slow_push_fallback"] = "step_no_settle_room"
+            changed += 1
+            continue
+        current = max(0, int(d.get("transition_end_ms", start)) - start)
+        transition = max(MIN_PUSH_MS, min(current, max_transition))
+        d["transition_end_ms"] = start + transition
+        d["slow_push_settle_ms"] = end - d["transition_end_ms"]
+        changed += int(transition != current)
+    return changed
 
-        actual_scale, crop, headroom_ratio = safe
-        decision["crop_end"] = crop
-        decision["scale"] = actual_scale
-        decision["headroom_ratio"] = headroom_ratio
-        decision["zoom_level"] = level
-        decision["reels_role"] = level
-        decision["reels_target_scale"] = target_scale
-        decision["reels_scale_limited"] = actual_scale + 0.005 < target_scale
-        decision["state_cap"] = target_scale
+
+def _hold(d: dict[str, Any], reason: str) -> None:
+    d["motion"] = "hold"
+    d["crop_end"] = list(d.get("crop_start") or d.get("crop_end") or [])
+    d["transition_end_ms"] = int(d.get("start_ms", 0))
+    d["auto_return"] = False
+    d["continued_by_next"] = True
+    d["continuation_reason"] = reason
 
 
-def _suppress_same_block_returns(
-    result: dict[str, Any],
-    events: list[dict[str, Any]],
-    continuation_ms: int,
-) -> int:
-    decisions = list(result.get("decisions") or [])
-    returns = list(result.get("returns") or [])
-    planned = _planned_by_event(decisions)
-    index_by_id = {str(event.get("id")): i for i, event in enumerate(events)}
-    event_by_id = {str(event.get("id")): event for event in events}
+def _same_block(result: dict[str, Any], events: list[dict[str, Any]], grace: int) -> int:
+    decisions = {str(d.get("event_id")): d for d in result.get("decisions", []) if d.get("status") == "PLANNED"}
+    by_id = {str(e.get("id")): e for e in events}
+    index = {str(e.get("id")): i for i, e in enumerate(events)}
     suppressed: set[str] = set()
-
-    for ret in returns:
-        parent_id = str(ret.get("parent_event_id") or "")
-        parent_event = event_by_id.get(parent_id)
-        parent_decision = planned.get(parent_id)
-        parent_index = index_by_id.get(parent_id)
-        if parent_event is None or parent_decision is None or parent_index is None:
+    for ret in result.get("returns", []):
+        pid = str(ret.get("parent_event_id") or "")
+        parent, pi = by_id.get(pid), index.get(pid)
+        if parent is None or pi is None or pi + 1 >= len(events):
             continue
-        if parent_index + 1 >= len(events):
+        nxt = events[pi + 1]
+        nd = decisions.get(str(nxt.get("id") or ""))
+        pd = decisions.get(pid)
+        if pd is None or nd is None or str(nxt.get("direction") or "").lower() == "release":
             continue
-
-        next_event = events[parent_index + 1]
-        next_decision = planned.get(str(next_event.get("id") or ""))
-        if next_decision is None or str(next_decision.get("state")) == "CONTEXT":
+        if str(parent.get("block_id") or "") != str(nxt.get("block_id") or ""):
             continue
-        if str(next_event.get("direction") or "").strip().lower() == "release":
+        return_ms = int(ret.get("start_ms", 0))
+        if int(nd.get("start_ms", nxt.get("t_ms", 0))) - return_ms > grace:
             continue
-
-        parent_block = str(parent_event.get("block_id") or "").strip()
-        next_block = str(next_event.get("block_id") or "").strip()
-        if not parent_block or parent_block != next_block:
-            continue
-
-        return_ms = int(ret.get("start_ms", ret.get("end_ms", 0)))
-        next_start_ms = int(next_decision.get("start_ms", next_event.get("t_ms", 0)))
-        if next_start_ms - return_ms > continuation_ms:
-            continue
-
-        suppressed.add(parent_id)
-        parent_decision["auto_return"] = False
-        parent_decision["continued_by_next"] = True
-        parent_decision["continuation_reason"] = "same_block"
-
-        previous_crop = list(parent_decision.get("crop_end") or [])
-        next_crop = list(next_decision.get("crop_end") or [])
-        if previous_crop and previous_crop == next_crop:
-            next_decision["motion"] = "hold"
-            next_decision["transition_end_ms"] = int(next_decision.get("start_ms", 0))
-            next_decision["why"] = "same_block_hold"
-
+        suppressed.add(pid)
+        pd["auto_return"], pd["continued_by_next"], pd["continuation_reason"] = False, True, "same_block"
+        if pd.get("zoom_level") and pd.get("zoom_level") == nd.get("zoom_level"):
+            nd["crop_end"] = list(pd.get("crop_end") or nd.get("crop_end") or [])
+            nd["scale"] = pd.get("scale", nd.get("scale"))
+            _hold(nd, "same_block_same_level_hold")
     if suppressed:
-        result["returns"] = [
-            ret for ret in returns
-            if str(ret.get("parent_event_id") or "") not in suppressed
-        ]
+        result["returns"] = [r for r in result.get("returns", []) if str(r.get("parent_event_id") or "") not in suppressed]
     return len(suppressed)
 
 
-def _visible_fixed_changes(
-    *,
-    duration_ms: int,
-    content_cuts_ms: list[int],
-    decisions: list[dict[str, Any]],
-    returns: list[dict[str, Any]],
-) -> list[int]:
-    changes = {0, max(0, int(duration_ms))}
-    changes.update(max(0, min(duration_ms, int(t))) for t in content_cuts_ms)
-    for decision in decisions:
-        if (
-            decision.get("status") == "PLANNED"
-            and str(decision.get("motion", "hold")) != "hold"
-            and decision.get("crop_start") != decision.get("crop_end")
-        ):
-            changes.add(max(0, min(duration_ms, int(decision.get("start_ms", 0)))))
-    for ret in returns:
-        if ret.get("crop_start") != ret.get("crop_end"):
-            changes.add(max(0, min(duration_ms, int(ret.get("start_ms", 0)))))
-    return sorted(changes)
-
-
-def _reels_cadence_requests(
-    *,
-    duration_ms: int,
-    content_cuts_ms: list[int],
-    decisions: list[dict[str, Any]],
-    returns: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    known = _visible_fixed_changes(
-        duration_ms=duration_ms,
-        content_cuts_ms=content_cuts_ms,
-        decisions=decisions,
-        returns=returns,
+def _coalesce_fast(result: dict[str, Any]) -> int:
+    visible = sorted(
+        [d for d in result.get("decisions", []) if d.get("status") == "PLANNED" and d.get("motion") != "hold"
+         and d.get("crop_start") != d.get("crop_end")],
+        key=lambda d: int(d.get("start_ms", 0)),
     )
-    requests: list[dict[str, Any]] = []
+    kept, suppressed_ids, count = [], set(), 0
+    for current in visible:
+        drop_current = False
+        while kept and int(current.get("start_ms", 0)) - int(kept[-1].get("start_ms", 0)) < MIN_GAP_MS:
+            previous = kept[-1]
+            if LEVEL_RANK.get(str(current.get("zoom_level")), 0) > LEVEL_RANK.get(str(previous.get("zoom_level")), 0):
+                _hold(previous, "rapid_change_stronger_next")
+                suppressed_ids.add(str(previous.get("event_id") or ""))
+                kept.pop(); count += 1
+            else:
+                _hold(current, "rapid_change_coalesced")
+                suppressed_ids.add(str(current.get("event_id") or ""))
+                count += 1; drop_current = True; break
+        if not drop_current:
+            kept.append(current)
+    if suppressed_ids:
+        result["returns"] = [r for r in result.get("returns", []) if str(r.get("parent_event_id") or "") not in suppressed_ids]
+    return count
 
+
+def _short_home(result: dict[str, Any]) -> int:
+    visible = sorted(
+        [d for d in result.get("decisions", []) if d.get("status") == "PLANNED" and d.get("motion") != "hold"
+         and d.get("crop_start") != d.get("crop_end")],
+        key=lambda d: int(d.get("start_ms", 0)),
+    )
+    kept, count = [], 0
+    for ret in sorted(result.get("returns", []), key=lambda r: int(r.get("start_ms", 0))):
+        t = int(ret.get("start_ms", 0))
+        nxt = next((d for d in visible if int(d.get("start_ms", 0)) > t), None)
+        if nxt is not None and int(nxt.get("start_ms", 0)) - t < MIN_GAP_MS:
+            count += 1
+            continue
+        kept.append(ret)
+    result["returns"] = kept
+    return count
+
+
+def _fixed_changes(duration: int, cuts: list[int], decisions: list[dict[str, Any]], returns: list[dict[str, Any]]) -> list[int]:
+    times = {0, duration, *[max(0, min(duration, int(t))) for t in cuts]}
+    times.update(int(d.get("start_ms", 0)) for d in decisions if d.get("status") == "PLANNED" and d.get("motion") != "hold" and d.get("crop_start") != d.get("crop_end"))
+    times.update(int(r.get("start_ms", 0)) for r in returns if r.get("crop_start") != r.get("crop_end"))
+    return sorted(t for t in times if 0 <= t <= duration)
+
+
+def _cadence_requests(duration: int, cuts: list[int], decisions: list[dict[str, Any]], returns: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    known, requests = _fixed_changes(duration, cuts, decisions, returns), []
     for left, right in zip(known, known[1:]):
         cursor = left
-        while right - cursor > MAX_CHANGE_GAP_MS:
-            earliest = cursor + MIN_CHANGE_GAP_MS
-            latest = min(cursor + MAX_CHANGE_GAP_MS, right - MIN_CHANGE_GAP_MS)
-            if latest < earliest:
+        while right - cursor > MAX_GAP_MS:
+            lo, hi = cursor + MIN_GAP_MS, min(cursor + MAX_GAP_MS, right - MIN_GAP_MS)
+            if hi < lo:
                 break
-            desired = max(earliest, min(cursor + PREFERRED_CHANGE_GAP_MS, latest))
-            requests.append({
-                "at_ms": int(desired),
-                "window_start_ms": int(earliest),
-                "window_end_ms": int(latest),
-                "preferred_action": "cadence_low_level_refresh",
-                "fallback_action": "hold_if_no_safe_refresh",
-                "semantic_trigger": False,
-                "gap_start_ms": int(cursor),
-                "gap_end_ms": int(right),
-            })
-            cursor = int(desired)
+            at = max(lo, min(cursor + PREFERRED_GAP_MS, hi))
+            requests.append({"at_ms": at, "window_start_ms": lo, "window_end_ms": hi, "semantic_trigger": False})
+            cursor = at
     return requests
 
 
-def _visual_candidate_ok(row: dict[str, Any]) -> bool:
-    if any(bool(row.get(k, False)) for k in (
-        "blink", "blur", "hard_block", "eyes_closed", "long_eye_closure",
-        "pose_unsafe", "strong_head_turn",
-    )):
+def _candidate_ok(row: dict[str, Any]) -> bool:
+    if any(bool(row.get(k, False)) for k in ("blink", "blur", "hard_block", "eyes_closed", "long_eye_closure", "pose_unsafe", "strong_head_turn")):
         return False
-    ear = row.get("ear")
-    if ear is not None and float(ear) < 0.20:
+    if row.get("ear") is not None and float(row["ear"]) < 0.20:
         return False
-    mar = row.get("mar")
-    if mar is not None and float(mar) > 0.45:
+    if row.get("mar") is not None and float(row["mar"]) > 0.45:
         return False
-    laplacian_var = row.get("laplacian_var")
-    if laplacian_var is not None and float(laplacian_var) < 60.0:
+    if row.get("laplacian_var") is not None and float(row["laplacian_var"]) < 60:
         return False
-    flow_speed = row.get("flow_speed_px") or row.get("motion_speed_px")
-    if flow_speed is not None and float(flow_speed) > 2.0:
-        return False
-    return True
+    flow = row.get("flow_speed_px") or row.get("motion_speed_px")
+    return not (flow is not None and float(flow) > 2.0)
 
 
-def _choose_cadence_time(observations: list[dict[str, Any]], request: dict[str, Any]) -> int | None:
-    lo = int(request["window_start_ms"])
-    hi = int(request["window_end_ms"])
-    desired = int(request["at_ms"])
-    candidates = [row for row in observations if lo <= int(row["t_ms"]) <= hi and _visual_candidate_ok(row)]
-    if not candidates:
-        return None
-    candidates.sort(key=lambda row: (
-        0 if row.get("head_return") else 1,
-        abs(int(row["t_ms"]) - desired),
-        int(row["t_ms"]),
-    ))
-    return int(candidates[0]["t_ms"])
-
-
-def _fixed_timeline_items(result: dict[str, Any]) -> list[dict[str, Any]]:
-    items: list[dict[str, Any]] = []
-    for decision in result.get("decisions", []):
-        if decision.get("status") == "PLANNED":
-            items.append({
-                "start_ms": int(decision.get("start_ms", 0)),
-                "priority": 1,
-                "crop_end": list(decision.get("crop_end") or []),
-            })
-    for ret in result.get("returns", []):
-        items.append({
-            "start_ms": int(ret.get("start_ms", 0)),
-            "priority": 0,
-            "crop_end": list(ret.get("crop_end") or []),
-        })
-    items.sort(key=lambda item: (item["start_ms"], item["priority"]))
-    return items
-
-
-def _next_cadence_level(current_scale: float) -> str:
-    if current_scale <= 1.005:
-        return "Z1"
-    if current_scale <= ZOOM_LEVELS["Z1"] + 0.01:
-        return "Z2"
-    return "Z1"
-
-
-def _materialize_cadence(
-    result: dict[str, Any],
-    prepared: dict[str, Any],
-    requests: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    width = int(result["source"]["width"])
-    height = int(result["source"]["height"])
-    observations = sorted(list(prepared.get("observations") or []), key=lambda o: int(o["t_ms"]))
-    if not observations:
+def _materialize_cadence(result: dict[str, Any], prepared: dict[str, Any], requests: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    w, h = int(result["source"]["width"]), int(result["source"]["height"])
+    obs = sorted(list(prepared.get("observations") or []), key=lambda o: int(o["t_ms"]))
+    if not obs:
         return [], requests
-
-    config = dict(result.get("config") or {})
-    window_ms = int(config.get("window_ms", 1200))
-    quality_cap = float(prepared.get("source", {}).get("quality_cap", REELS_ABSOLUTE_CAP))
-    global_anchor = core._get_global_anchor(observations)
-    fixed = _fixed_timeline_items(result)
-
-    current_crop = [0, 0, width, height]
-    fixed_index = 0
-    cadence_decisions: list[dict[str, Any]] = []
-    unresolved: list[dict[str, Any]] = []
-
-    for index, request in enumerate(sorted(requests, key=lambda r: int(r["at_ms"]))):
-        desired_ms = int(request["at_ms"])
-        while fixed_index < len(fixed) and fixed[fixed_index]["start_ms"] <= desired_ms:
-            crop_end = fixed[fixed_index]["crop_end"]
-            if crop_end:
-                current_crop = list(crop_end)
-            fixed_index += 1
-
-        current_scale = _crop_scale(current_crop, width, height)
+    window = int((result.get("config") or {}).get("window_ms", 1200))
+    quality = float(prepared.get("source", {}).get("quality_cap", ABS_CAP))
+    anchor = core._get_global_anchor(obs)
+    fixed = []
+    for d in result.get("decisions", []):
+        if d.get("status") == "PLANNED":
+            fixed.append((int(d.get("start_ms", 0)), list(d.get("crop_end") or [])))
+    for r in result.get("returns", []):
+        fixed.append((int(r.get("start_ms", 0)), list(r.get("crop_end") or [])))
+    fixed.sort()
+    crop, fi, out, unresolved = [0, 0, w, h], 0, [], []
+    for i, req in enumerate(sorted(requests, key=lambda x: int(x["at_ms"]))):
+        desired = int(req["at_ms"])
+        while fi < len(fixed) and fixed[fi][0] <= desired:
+            if fixed[fi][1]:
+                crop = list(fixed[fi][1])
+            fi += 1
+        current_scale = _scale(crop, w, h)
         if current_scale > ZOOM_LEVELS[CADENCE_MAX_LEVEL] + 0.01:
-            unresolved.append(dict(request, reason="semantic_framing_has_priority"))
-            continue
-
-        chosen_ms = _choose_cadence_time(observations, request)
-        if chosen_ms is None:
-            unresolved.append(dict(request, reason="no_safe_visual_boundary"))
-            continue
-
-        level = _next_cadence_level(current_scale)
-        safe = _safe_crop_at_scale(
-            observations,
-            start_ms=chosen_ms,
-            end_ms=chosen_ms + window_ms,
-            width=width,
-            height=height,
-            window_ms=window_ms,
-            target_scale=ZOOM_LEVELS[level],
-            quality_cap=quality_cap,
-            global_anchor=global_anchor,
-            candidate_scales=LEVEL_FALLBACKS[level],
-        )
-        if safe is None:
-            unresolved.append(dict(request, reason="no_safe_low_level_crop"))
-            continue
-
-        target_scale, target_crop, headroom_ratio = safe
-        cadence_decisions.append({
-            "event_id": f"cadence_{level.lower()}_{index:03d}",
-            "event_ms": desired_ms,
-            "start_ms": chosen_ms,
-            "end_ms": chosen_ms,
-            "transition_end_ms": chosen_ms,
-            "status": "PLANNED",
-            "state": "SOFT",
-            "base_desired_state": "SOFT",
-            "desired_state": "SOFT",
-            "direction": "cadence_refresh",
-            "motion": "step",
-            "motion_hint": "step",
-            "crop_start": list(current_crop),
-            "crop_end": list(target_crop),
-            "scale": round(float(target_scale), 4),
-            "state_cap": ZOOM_LEVELS[level],
-            "why": "cadence_low_level_refresh",
-            "semantic_trigger": False,
-            "cadence_refresh": True,
-            "zoom_level": level,
-            "reels_role": f"CADENCE_{level}",
-            "headroom_ratio": headroom_ratio,
+            unresolved.append({**req, "reason": "semantic_framing_has_priority"}); continue
+        candidates = [r for r in obs if int(req["window_start_ms"]) <= int(r["t_ms"]) <= int(req["window_end_ms"]) and _candidate_ok(r)]
+        if not candidates:
+            unresolved.append({**req, "reason": "no_safe_visual_boundary"}); continue
+        candidates.sort(key=lambda r: (0 if r.get("head_return") else 1, abs(int(r["t_ms"]) - desired)))
+        at = int(candidates[0]["t_ms"])
+        level = "Z1" if current_scale <= 1.005 or current_scale > ZOOM_LEVELS["Z1"] + 0.01 else "Z2"
+        safe = _safe_crop(obs, at, at + window, w, h, window, ZOOM_LEVELS[level], quality, anchor, LEVEL_FALLBACKS[level])
+        if not safe:
+            unresolved.append({**req, "reason": "no_safe_low_level_crop"}); continue
+        scale, target, headroom = safe
+        out.append({
+            "event_id": f"cadence_{level.lower()}_{i:03d}", "event_ms": desired, "start_ms": at, "end_ms": at,
+            "transition_end_ms": at, "status": "PLANNED", "state": "SOFT", "base_desired_state": "SOFT",
+            "desired_state": "SOFT", "direction": "cadence_refresh", "motion": "step", "motion_hint": "step",
+            "crop_start": list(crop), "crop_end": list(target), "scale": scale, "state_cap": ZOOM_LEVELS[level],
+            "why": "cadence_low_level_refresh", "semantic_trigger": False, "cadence_refresh": True,
+            "zoom_level": level, "reels_role": f"CADENCE_{level}", "headroom_ratio": headroom,
         })
-        current_crop = list(target_crop)
-
-    return cadence_decisions, unresolved
-
-
-def _normalize_timeline_crop_starts(result: dict[str, Any]) -> None:
-    width = int(result["source"]["width"])
-    height = int(result["source"]["height"])
-    current_crop = [0, 0, width, height]
-
-    items: list[tuple[int, int, dict[str, Any]]] = []
-    for decision in result.get("decisions", []):
-        if decision.get("status") == "PLANNED":
-            items.append((int(decision.get("start_ms", 0)), 1, decision))
-    for ret in result.get("returns", []):
-        items.append((int(ret.get("start_ms", 0)), 0, ret))
-    items.sort(key=lambda item: (item[0], item[1]))
-
-    for _, _, item in items:
-        item["crop_start"] = list(current_crop)
-        if str(item.get("motion", "step")) == "hold":
-            item["crop_end"] = list(current_crop)
-        current_crop = list(item.get("crop_end") or current_crop)
+        crop = list(target)
+    return out, unresolved
 
 
-def _rhythm_summary(result: dict[str, Any], events: list[dict[str, Any]]) -> dict[str, Any]:
-    duration_ms = int(result.get("source", {}).get("duration_ms") or 0)
-    event_by_id = {str(event.get("id")): event for event in events}
+def _normalize(result: dict[str, Any]) -> None:
+    w, h = int(result["source"]["width"]), int(result["source"]["height"])
+    crop, items = [0, 0, w, h], []
+    items.extend((int(d.get("start_ms", 0)), 1, d) for d in result.get("decisions", []) if d.get("status") == "PLANNED")
+    items.extend((int(r.get("start_ms", 0)), 0, r) for r in result.get("returns", []))
+    for _, _, item in sorted(items, key=lambda x: (x[0], x[1])):
+        item["crop_start"] = list(crop)
+        if item.get("motion") == "hold":
+            item["crop_end"] = list(crop)
+        crop = list(item.get("crop_end") or crop)
 
-    decision_changes = [
-        decision for decision in result.get("decisions", [])
-        if decision.get("status") == "PLANNED"
-        and str(decision.get("motion", "hold")) != "hold"
-        and decision.get("crop_start") != decision.get("crop_end")
-    ]
-    return_changes = [ret for ret in result.get("returns", []) if ret.get("crop_start") != ret.get("crop_end")]
-    starts = sorted(
-        [int(item.get("start_ms", 0)) for item in decision_changes]
-        + [int(item.get("start_ms", 0)) for item in return_changes]
-    )
-    gaps = [right - left for left, right in zip(starts, starts[1:])]
 
-    semantic_visible = [d for d in decision_changes if not bool(d.get("cadence_refresh"))]
-    cadence_visible = [d for d in decision_changes if bool(d.get("cadence_refresh"))]
-
-    episodes = 0
-    previous_block: str | None = None
-    previous_start: int | None = None
-    for decision in sorted(semantic_visible, key=lambda item: int(item.get("start_ms", 0))):
-        event = event_by_id.get(str(decision.get("event_id")), {})
-        block = str(event.get("block_id") or decision.get("event_id") or "")
-        start = int(decision.get("start_ms", 0))
-        same_episode = (
-            previous_block is not None
-            and block == previous_block
-            and previous_start is not None
-            and start - previous_start <= SAME_BLOCK_CONTINUATION_MS + 2500
-        )
-        if not same_episode:
-            episodes += 1
-        previous_block = block
-        previous_start = start
-
-    level_counts = {level: 0 for level in ZOOM_LEVELS}
-    for decision in decision_changes:
-        level = str(decision.get("zoom_level") or "")
-        if level in level_counts:
-            level_counts[level] += 1
-
-    per_min = 0.0 if duration_ms <= 0 else len(starts) * 60000.0 / duration_ms
+def _summary(result: dict[str, Any]) -> dict[str, Any]:
+    duration = int(result.get("source", {}).get("duration_ms") or 0)
+    changes = [(int(d.get("start_ms", 0)), d) for d in result.get("decisions", []) if d.get("status") == "PLANNED" and d.get("motion") != "hold" and d.get("crop_start") != d.get("crop_end")]
+    times = sorted([t for t, _ in changes] + [int(r.get("start_ms", 0)) for r in result.get("returns", []) if r.get("crop_start") != r.get("crop_end")])
+    gaps = [b - a for a, b in zip(times, times[1:])]
+    counts = {k: 0 for k in ZOOM_LEVELS}
+    for _, d in changes:
+        if d.get("zoom_level") in counts:
+            counts[d["zoom_level"]] += 1
     return {
-        "visible_framing_change_count": len(starts),
-        "semantic_change_count": len(semantic_visible),
-        "cadence_low_level_change_count": len(cadence_visible),
-        "semantic_episode_count": episodes,
-        "zoom_level_counts": level_counts,
-        "framing_changes_per_min": round(per_min, 2),
+        "visible_framing_change_count": len(times),
+        "semantic_change_count": sum(not bool(d.get("cadence_refresh")) for _, d in changes),
+        "cadence_low_level_change_count": sum(bool(d.get("cadence_refresh")) for _, d in changes),
+        "zoom_level_counts": counts,
+        "framing_changes_per_min": round((len(times) * 60000 / duration), 2) if duration else 0.0,
         "median_gap_between_framing_changes_ms": int(median(gaps)) if gaps else None,
-        "cadence_min_gap_ms": MIN_CHANGE_GAP_MS,
-        "cadence_preferred_gap_ms": PREFERRED_CHANGE_GAP_MS,
-        "cadence_max_gap_ms": MAX_CHANGE_GAP_MS,
+        "minimum_gap_between_framing_changes_ms": min(gaps) if gaps else None,
+        "cadence_min_gap_ms": MIN_GAP_MS, "cadence_preferred_gap_ms": PREFERRED_GAP_MS, "cadence_max_gap_ms": MAX_GAP_MS,
     }
 
 
 def plan(payload: dict[str, Any]) -> dict[str, Any]:
-    prepared, events = _prepare_payload(payload)
-
-    original_zoom_duration = core._zoom_duration
-    core._zoom_duration = _semantic_zoom_duration
+    prepared, events = _prepare(payload)
+    old_duration = core._zoom_duration
+    core._zoom_duration = _duration
     try:
         result = core.plan(prepared)
     finally:
-        core._zoom_duration = original_zoom_duration
-
-    _retarget_semantic_scales(result, prepared)
-
-    continuation_ms = max(
-        0,
-        int((payload.get("config") or {}).get("same_block_continuation_ms", SAME_BLOCK_CONTINUATION_MS)),
-    )
-    suppressed = _suppress_same_block_returns(result, events, continuation_ms)
-
-    duration_ms = int(result.get("source", {}).get("duration_ms") or 0)
-    content_cuts_ms = [int(v) for v in (prepared.get("content_cuts_ms") or [])]
-    cadence_requests = _reels_cadence_requests(
-        duration_ms=duration_ms,
-        content_cuts_ms=content_cuts_ms,
-        decisions=list(result.get("decisions") or []),
-        returns=list(result.get("returns") or []),
-    )
-    cadence_decisions, unresolved = _materialize_cadence(result, prepared, cadence_requests)
-    result.setdefault("decisions", []).extend(cadence_decisions)
-    _normalize_timeline_crop_starts(result)
-
-    result["cadence_requests"] = unresolved
-    result["cadence_low_level_changes"] = len(cadence_decisions)
+        core._zoom_duration = old_duration
+    _retarget(result, prepared)
+    slow = _slow_push_settle(result)
+    grace = max(0, int((payload.get("config") or {}).get("same_block_continuation_ms", SAME_BLOCK_MS)))
+    same = _same_block(result, events, grace)
+    rapid = _coalesce_fast(result)
+    short_home = _short_home(result)
+    duration = int(result.get("source", {}).get("duration_ms") or 0)
+    cuts = [int(x) for x in prepared.get("content_cuts_ms", [])]
+    requests = _cadence_requests(duration, cuts, list(result.get("decisions") or []), list(result.get("returns") or []))
+    cadence, unresolved = _materialize_cadence(result, prepared, requests)
+    result.setdefault("decisions", []).extend(cadence)
+    _normalize(result)
     result["version"] = VERSION
-    result.setdefault("config", {})["same_block_continuation_ms"] = continuation_ms
-    result["config"]["reels_cadence"] = {
-        "min_change_gap_ms": MIN_CHANGE_GAP_MS,
-        "preferred_change_gap_ms": PREFERRED_CHANGE_GAP_MS,
-        "max_change_gap_ms": MAX_CHANGE_GAP_MS,
-    }
-    result["config"]["reels_scales"] = {"HOME": REELS_HOME_SCALE, **ZOOM_LEVELS}
-    result["config"]["semantic_importance_thresholds"] = {
-        "Z2": Z2_IMPORTANCE,
-        "Z3": Z3_IMPORTANCE,
-        "Z4": Z4_IMPORTANCE,
-    }
-    result["config"]["cadence_max_level"] = CADENCE_MAX_LEVEL
-    result["config"]["absolute_zoom_cap"] = min(
-        REELS_ABSOLUTE_CAP,
-        float(prepared.get("source", {}).get("quality_cap", REELS_ABSOLUTE_CAP)),
-    )
-    result["config"]["state_caps"] = {
-        "CONTEXT": REELS_HOME_SCALE,
-        "SOFT": ZOOM_LEVELS["Z2"],
-        "ARGUMENT": ZOOM_LEVELS["Z3"],
-        "EMPHASIS": ZOOM_LEVELS["Z4"],
-    }
-    result["same_block_returns_suppressed"] = suppressed
-    result["rhythm_summary"] = _rhythm_summary(result, events)
-
-    visual_times = {0, duration_ms}
-    visual_times.update(content_cuts_ms)
-    for decision in result.get("decisions", []):
-        if (
-            decision.get("status") == "PLANNED"
-            and str(decision.get("motion", "hold")) != "hold"
-            and decision.get("crop_start") != decision.get("crop_end")
-        ):
-            visual_times.add(int(decision.get("start_ms", 0)))
-    for ret in result.get("returns", []):
-        if ret.get("crop_start") != ret.get("crop_end"):
-            visual_times.add(int(ret.get("start_ms", 0)))
-    result["visual_change_times_ms"] = sorted(t for t in visual_times if 0 <= t <= duration_ms)
+    result["cadence_requests"] = unresolved
+    result["cadence_low_level_changes"] = len(cadence)
+    result["same_block_returns_suppressed"] = same
+    result["rapid_semantic_changes_coalesced"] = rapid
+    result["short_home_flashes_suppressed"] = short_home
+    result["slow_push_adjusted"] = slow
+    result.setdefault("config", {}).update({
+        "same_block_continuation_ms": grace,
+        "reels_cadence": {"min_change_gap_ms": MIN_GAP_MS, "preferred_change_gap_ms": PREFERRED_GAP_MS, "max_change_gap_ms": MAX_GAP_MS},
+        "reels_scales": {"HOME": HOME, **ZOOM_LEVELS},
+        "semantic_importance_thresholds": {"Z2_effective": Z2_IMPORTANCE, "Z3_effective": Z3_IMPORTANCE, "Z4_raw_semantic": Z4_RAW_IMPORTANCE},
+        "cadence_max_level": CADENCE_MAX_LEVEL, "absolute_zoom_cap": ABS_CAP,
+        "state_caps": {"CONTEXT": HOME, "SOFT": 1.06, "ARGUMENT": 1.09, "EMPHASIS": 1.13},
+        "min_visible_framing_ms": MIN_GAP_MS, "min_slow_push_settle_ms": MIN_SETTLE_MS,
+    })
+    result["rhythm_summary"] = _summary(result)
+    visual = {0, duration, *cuts}
+    visual.update(int(d.get("start_ms", 0)) for d in result.get("decisions", []) if d.get("status") == "PLANNED" and d.get("motion") != "hold" and d.get("crop_start") != d.get("crop_end"))
+    visual.update(int(r.get("start_ms", 0)) for r in result.get("returns", []) if r.get("crop_start") != r.get("crop_end"))
+    result["visual_change_times_ms"] = sorted(t for t in visual if 0 <= t <= duration)
     return result
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Plan v1.7.6 Reels four-level semantic + cadence framing")
-    parser.add_argument("input_json")
-    parser.add_argument("output_json")
-    args = parser.parse_args(argv)
+    p = argparse.ArgumentParser(description="Plan v1.7.6 Reels four-level semantic + cadence framing")
+    p.add_argument("input_json"); p.add_argument("output_json")
+    args = p.parse_args(argv)
     payload = json.loads(Path(args.input_json).read_text(encoding="utf-8"))
-    result = plan(payload)
-    Path(args.output_json).write_text(
-        json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    Path(args.output_json).write_text(json.dumps(plan(payload), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return 0
 
 
