@@ -1,165 +1,110 @@
-# Talking-Head Jumpcut & Zoom Editor v1.7.5 Lite
+# Talking-Head Jumpcut & Zoom Editor v1.7.6 Energy
 
-This document is the compact engineering contract. `SKILL.md` is the production-agent instruction.
+`SKILL.md` is the canonical production instruction. This file is the compact engineering contract.
 
-## Goal
-
-Keep v1.7.2 fail-closed reliability while restoring restrained gold/early-v1.x directing:
+## Architecture
 
 ```text
-WHAT + bounded HOW -> editorial salience
+normalize -> Whisper -> speech_cleanup -> visual_scan
+-> semantic_events_v176
+-> zoom_planner_energy_v176
+   -> zoom_planner_v176 core
+-> QC/review -> render -> pixel/final QC
 ```
 
-Performance can amplify an existing semantic beat, but it cannot create WHY.
+The energy layer is deterministic and adds no LLM pass or renderer stage.
 
-## Pipeline
+## Pause policy
+
+Family B preserves pauses through `450 ms`; longer pauses are reduced to about `450 ms`.
+Family A remains conservative.
+
+## Camera grammar
 
 ```text
-normalize_source.py
-→ Whisper words
-→ speech_cleanup.py [family gate A/B/C + pacing]
-→ visual_scan.py
-→ agent semantic_marks
-→ semantic_events.py
-→ analysis.json
-→ zoom_planner.py
-→ simple_qc.py
-→ visual_evidence.py + real visual review
-→ pipeline_guard.py pre-render
-→ render_zoom.py
-→ post_render_qc.py
-→ final visual evidence/review
-→ pipeline_guard.py final
+HOME 1.00
+Z1   1.03
+Z2   1.05
+Z3   1.08
+Z4   1.12
+PROFILE CAP 1.12
 ```
 
-## Pacing families
+Generated editorial-energy events may use only Z1-Z3. Z4 remains semantic-only.
 
-### A — dense
+## Editorial energy
 
-AUTO ambiguous → A. Default `pause_cleanup_enabled=false`.
-
-### B — air
-
-AUTO B requires repeated air:
+Each real semantic event gets `editorial_energy` in `0..1` from existing effective importance, semantic direction and bounded performance salience.
+The value is an editorial-control signal, not measured viewer attention.
 
 ```text
->=2 raw word gaps >450 ms
-OR
->=4 raw word gaps >300 ms
+rise_fast -> STEP upward
+rise      -> SLOW_PUSH upward
+hold      -> keep framing when suitable
+fall      -> lower zoom level
+fall_fast / low energy -> release HOME
 ```
 
-Default:
+Energy between real semantic events is interpolated. If the clip has no upcoming semantic event, energy slowly decays toward a calmer framing.
+
+## First 5 seconds
+
+Opening cannot remain visually static when a safe crop exists.
+The director targets a low-level rising ramp around:
 
 ```text
-cut_threshold_ms=250
-target_gap_ms=180
+~0.8 s -> Z1 1.03
+~3.9 s -> Z2 1.05
 ```
 
-### C — explicit second take / CTA
+Nearby real semantic events replace synthetic intro events.
+Intro movement prefers eased slow push.
 
-Owner-supplied only. Body cleanup off by default.
+## Timing guard rail
 
-`250 ms` is no longer a global default. Generic fail-safe default remains 500 ms, but canonical B explicitly resolves to 250 ms.
+```text
+normal minimum gap: ~3.0 s
+preferred checkpoint: ~4.5 s
+fallback refresh after: ~6.0 s
+```
 
-No ad-hoc RMS/VAD refinement is allowed until a canonical acoustic detector exists.
+This is not the cause of a semantic zoom. Energy/meaning chooses the camera trajectory; cadence only prevents unusually long visual stasis.
+
+After the opening, generated energy checkpoints are considered roughly every `4.5 s` when no real semantic event is nearby.
+
+## Motion
+
+```text
+slow push target ~2.0 s
+settle >=0.5 s
+```
+
+Sharp peaks stay STEP. Gradual rises may slow-push.
 
 ## Semantic contract
 
-Required semantic mark:
-
-```json
-{
-  "start_word": 10,
-  "end_word": 15,
-  "importance": 0.72,
-  "why": "thesis payoff"
-}
-```
-
-Optional performance fields:
-
-```json
-{
-  "performance_emphasis": 0.9,
-  "performance_evidence": "speaker leans in and delivery energy rises"
-}
-```
-
-Rules:
-
-- semantic importance `<0.40` gets no performance bonus;
-- performance bonus max `+0.08`;
-- performance evidence is required when performance_emphasis > 0;
-- gaze/head movement alone is never WHY.
-
-## Gold-lite framing
+Important non-release marks still require:
 
 ```text
-CONTEXT    1.00
-ARGUMENT   1.08
-EMPHASIS   1.12
-RATCHET_1  1.08
-RATCHET_2  1.12
-RATCHET_3  1.16
-HARD CAP   1.20
+WHY + block_id + accent_word
 ```
 
-Most runtime stays at CONTEXT.
-
-Episode durations:
-
-```text
-micro_punch    0.5–1.2 s
-beat           1.2–2.0 s
-argument_hold  2.0–2.5 s rare
-```
-
-## Dramatic continuity
-
-Do not force return-to-home between every adjacent semantic beat.
-
-```text
-same coherent thought:
-1.00 → 1.08 build → 1.12 peak → 1.00 release
-```
-
-Reset to CONTEXT on a new block/release. A standalone compact punch normally returns home.
-
-## Density
-
-Observed gold density around one visible semantic punch per ~7 s is a **ceiling/warning**, never a target or quota.
-
-```text
-elapsed time ≠ WHY
-```
-
-Do not manufacture zooms to satisfy density.
+Raw semantic importance is preserved separately so performance/generated energy cannot manufacture Z4.
 
 ## Safety
 
-Boundary hard rejects:
+Inherited v1.7.5/v1.7.6 safety remains authoritative: Tripod Lock, optical/eye-line anchor, face travel, gesture/prop/caption protection, segment-wide headroom, blink/blur/pose/motion rejection and quality/crop bounds.
 
-- blink/eye closure;
-- blur;
-- unsafe head pose/turn;
-- gesture/prop conflict;
-- crop/headroom/face-travel violation.
-
-Soft bonuses may include word boundary, pause, head return and cadence fit.
-
-## Acceptance
-
-A production result is accepted only after:
+## Diagnostics
 
 ```text
-pre-QC PASS
-+ family provenance
-+ machine visual observations
-+ actual selected-frame review
-+ guarded render
-+ post-render pixel QC PASS
-+ final visual review
-+ final guard PASS
+editorial_energy_curve
+intro_energy_events_added
+energy_checkpoints_added
+intro_energy_movement
+rhythm_summary
 ```
 
-No canonical stage may be silently replaced by an agent-written production equivalent.
+## Provenance
+
+Production guard remains compatible because the energy zoom plan reports `1.7.6-energy` and semantic artifacts remain `1.7.6*`.

@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.6-lite] - 2026-09-02
+
+### Added
+- Required semantic episode fields for important non-release marks: `block_id` + `accent_word`; legacy defaults now require explicit compatibility config.
+- Four Reels zoom levels above exact HOME: Z1 1.03, Z2 1.06, Z3 1.09, Z4 1.13.
+- Calmer Reels cadence adapter with ~3.0 s minimum, ~4.5 s preferred, ~6.0 s maximum visual-gap target; cadence may create only Z1/Z2.
+- Rapid-semantic-change coalescing and short-HOME-flash suppression.
+- Selective automatic slow push for semantic `build` moments: ~2.0 s transition with >=500 ms settle; STEP remains default elsewhere.
+- `rhythm_summary` diagnostics for per-level counts and framing gaps.
+- Pipeline provenance lock for v1.7.6 semantic + zoom artifacts.
+
+### Changed
+- Family-B pause cleanup now preserves pauses up to 450 ms and clamps longer gaps to about 450 ms instead of aggressively compressing them.
+- Z4 now requires raw semantic importance >=0.90 or explicit `peak` / `ratchet_3`; performance bonus alone may not manufacture the strongest close-up.
+- Visible semantic framing has a ~3 s dwell floor even when the semantic span itself is shorter.
+- Same block + same zoom level is an explicit HOLD rather than a geometry-dependent re-zoom.
+- Slow-push motion is intentionally selective: semantic builds may glide; peaks and cadence refreshes remain STEP by default.
+
+### Fixed
+- Closed the mismatch where the earlier 2–5 s Reels rhythm still felt overly busy in real footage.
+- Closed the over-compressed Family-B pause feel caused by 250 ms-style residual gaps.
+- Closed silent fallback of missing `block_id` / `accent_word` in normal v1.7.6 runs.
+- Restored one canonical hard artistic cap of 1.13 across current docs and QC.
+
 ## [1.7.5-lite] - 2026-09-01
 
 ### Added
@@ -15,7 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Generic pause cleanup default is back to fail-safe 500 ms; Family B explicitly resolves to 250 ms. Family A/C skip pause compression by default.
-- Gold-lite framing is made unambiguous: normal ARGUMENT 1.08, EMPHASIS 1.12, ratchet 1.08/1.12/1.16.
+- Gold-lite framing is made unambiguous: normal ARGUMENT 1.08, EMPHASIS 1.12, ratchet 1.08/1.12/1.13.
 - `~1 punch / 7 s` is documented only as an observational density ceiling, never a quota or cadence target.
 - Dramatic continuity is restored: adjacent build→peak beats in one thought may sustain tension instead of forcing repeated home-frame chatter.
 - `V1_7_LITE.md` is replaced with a current v1.7.5 engineering contract instead of the stale v1.7.1 title/content.

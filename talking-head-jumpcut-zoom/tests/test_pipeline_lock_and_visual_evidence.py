@@ -22,7 +22,7 @@ def good_artifacts():
         "content_cuts_ms": [1800],
     }
     semantic = {
-        "version": "1.7.5-lite",
+        "version": "1.7.6-lite",
         "semantic_event_count": 1,
         "semantic_events": [{"id": "hook", "t_ms": 1000}],
     }
@@ -32,6 +32,7 @@ def good_artifacts():
         "observations": [{"t_ms": 0, "face_ratio": 0.3}],
     }
     plan = {
+        "version": "1.7.6-lite",
         "decisions": [{
             "event_id": "hook",
             "status": "PLANNED",
@@ -44,7 +45,7 @@ def good_artifacts():
         }],
         "returns": [],
     }
-    pre_qc = {"status": "PASS"}
+    pre_qc = {"version": "1.7.6-lite", "status": "PASS"}
     manifest = {
         "phase": "pre",
         "required_group_ids": ["jumpcut_00001800", "zoom_00001000"],
@@ -89,34 +90,42 @@ class VisualEvidenceTests(unittest.TestCase):
 
 class PipelineGuardTests(unittest.TestCase):
     def test_pre_guard_passes_complete_canonical_evidence(self):
-        artifacts = good_artifacts()
-        report = check_pre_render(*artifacts)
+        report = check_pre_render(*good_artifacts())
         self.assertEqual(report["status"], "PASS")
         self.assertEqual(report["pipeline_lock"], "PASS")
         self.assertEqual(report["visual_evidence"], "PASS")
-        self.assertEqual(report["evidence"]["family"], "B")
+        self.assertEqual(report["version"], "1.7.6-lite")
         validate_guard(report)
+
+    def test_pre_guard_rejects_old_semantic_or_zoom_provenance(self):
+        cleanup, semantic, scan, plan, pre_qc, manifest, review = good_artifacts()
+        semantic["version"] = "1.7.5-lite"
+        report = check_pre_render(cleanup, semantic, scan, plan, pre_qc, manifest, review)
+        self.assertIn("semantic_version_mismatch", {e["check"] for e in report["errors"]})
+
+        semantic["version"] = "1.7.6-lite"
+        plan["version"] = "1.7-lite"
+        report = check_pre_render(cleanup, semantic, scan, plan, pre_qc, manifest, review)
+        self.assertIn("zoom_plan_version_mismatch", {e["check"] for e in report["errors"]})
 
     def test_pre_guard_fails_without_family_gate(self):
         cleanup, semantic, scan, plan, pre_qc, manifest, review = good_artifacts()
         cleanup.pop("family")
         cleanup.pop("family_metrics")
         report = check_pre_render(cleanup, semantic, scan, plan, pre_qc, manifest, review)
-        checks = {e["check"] for e in report["errors"]}
-        self.assertIn("family_gate_missing", checks)
+        self.assertIn("family_gate_missing", {e["check"] for e in report["errors"]})
 
     def test_pre_guard_fails_without_visual_review(self):
         cleanup, semantic, scan, plan, pre_qc, manifest, review = good_artifacts()
         review["reviewed_groups"] = [{"id": "zoom_00001000", "verdict": "PASS"}]
         report = check_pre_render(cleanup, semantic, scan, plan, pre_qc, manifest, review)
-        checks = {e["check"] for e in report["errors"]}
         self.assertEqual(report["status"], "FAIL")
-        self.assertIn("pre_visual_groups_missing", checks)
+        self.assertIn("pre_visual_groups_missing", {e["check"] for e in report["errors"]})
         with self.assertRaises(ValueError):
             validate_guard(report)
 
     def test_pre_guard_fails_transcript_only_run(self):
-        cleanup, semantic, scan, plan, pre_qc, manifest, review = good_artifacts()
+        cleanup, semantic, _, plan, pre_qc, manifest, review = good_artifacts()
         scan = {"version": "1.7.2-lite", "face_coverage": 0.0, "observations": []}
         report = check_pre_render(cleanup, semantic, scan, plan, pre_qc, manifest, review)
         checks = {e["check"] for e in report["errors"]}

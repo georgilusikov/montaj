@@ -10,24 +10,29 @@ Raw footage with multiple retakes → select best takes via multimodal AI inspec
 
 - Word-level ASR transcription (Whisper)
 - Semantic block clustering & retake grouping
-- Direct video inspection by multimodal model (`view_file`)
+- Direct video inspection by multimodal AI
 - Scoring rubric: completeness, diction, prosody, eye contact, acoustics
 - Safe audio hygiene (no destructive spectral gating)
 - Outputs `clean_source.mp4` + `takes_report.json`
 
 ### 2. [talking-head-jumpcut-zoom](talking-head-jumpcut-zoom/)
 
-Clean source → adaptive retention zoom cuts → final vertical master.
+Clean source → editorial-energy Reels framing → final vertical master.
 
-- Eye-line dramaturgy & blink/blur/pose gates
-- 3-step dynamic zoom (1.00x → 1.08x → 1.16x)
-- Live speaker & AI-avatar profiles
-- FFmpeg render with trust-but-verify QC
+- Four energy-directed zoom levels: `1.03 / 1.05 / 1.08 / 1.12`
+- Mandatory safe opening motion in the first ~5 s; real semantics replace synthetic intro beats
+- Editorial-energy curve drives rise / hold / fall / release; cadence is only a ~3–6 s guard rail
+- Family-B pauses: preserve up to ~450 ms; longer gaps compress to about 450 ms
+- Gradual energy rises may use an eased ~2 s slow push; peaks remain STEP
+- Z4 / 1.12 remains semantic-only; generated energy cannot manufacture the strongest close-up
+- Semantic block continuity + accent-word targeting
+- Eye-line / headroom / blink / blur / pose / crop-safety gates
+- Guarded FFmpeg render with visual evidence and post-render pixel QC
 - Outputs final master + SRT captions
 
 ## Pipeline
 
-```
+```text
 Raw footage (multiple retakes)
   ↓
 multimodal-video-retakes-editor
@@ -41,7 +46,7 @@ talking-head-jumpcut-zoom
 
 - **ffmpeg** ≥ 6.0 (libx264, loudnorm)
 - **Python** ≥ 3.10: `whisper`, `opencv-python`, `numpy`, `parselmouth`, `librosa`
-- Multimodal AI agent with `view_file` support for video/audio
+- Multimodal AI agent with video/audio inspection support
 
 ## License
 

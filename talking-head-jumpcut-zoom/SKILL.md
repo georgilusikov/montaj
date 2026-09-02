@@ -1,450 +1,209 @@
 ---
 name: talking-head-jumpcut-zoom
-description: 'Автомонтаж вертикальных talking-head видео (9:16, Shorts, Reels, TikTok) по архитектуре v1.7.5 Lite: normalize → Whisper → speech_cleanup with executable family gate → visual_scan → semantic WHY + bounded performance salience → semantic_events → zoom_planner → QC → visual evidence → guarded render → pixel QC → final visual review. Triggers: "смонтируй говорящую голову", "talking head zoom", "сделай зумы как в рилс", "подрежь паузы и расставь зумы", "автомонтаж shorts", "zoom_planner", "ratchet zoom".'
+description: 'Автомонтаж вертикальных talking-head Reels/Shorts/TikTok: conservative pause cleanup, editorial-energy camera curve, guaranteed opening motion, four zoom levels, selective slow pushes, semantic continuity, guarded render and visual/pixel QC.'
 ---
 
-# Talking-Head Jumpcut & Zoom Editor v1.7.5 Lite
+# Talking-Head Jumpcut & Zoom Editor v1.7.6 Energy
 
-**Goal:** keep the reliability of v1.7.2 while restoring the restrained, performance-aware directing feel of the early v1.x editor.
+## Editorial Energy Director
 
-Core invariant:
+This remains a **thin evolution of the stable v1.7.6 Reels adapter**, not a planner rewrite.
+The existing v1.7.5/v1.7.6 geometry, visual safety, boundary selection, renderer and QC remain authoritative.
 
-```text
-CONTENT / PACING != SEMANTIC FRAMING != VISUAL EVIDENCE
-```
-
-And one additional v1.7.5 rule:
+Use the normal pipeline with:
 
 ```text
-WHAT was said + HOW it was delivered -> editorial salience
-BUT performance alone never creates WHY.
+speech_cleanup.py
+semantic_events_v176.py
+zoom_planner_energy_v176.py   <- canonical zoom entry point
 ```
 
----
+`zoom_planner_energy_v176.py` wraps `zoom_planner_v176.py`; it does not add another LLM pass or render stage.
 
-## 0. Canonical pipeline lock
-
-For production, canonical scripts are mandatory. Never create replacement production scripts such as:
+## Core ownership
 
 ```text
-run_full_montage.py
-fast_montage.py
-segment_montage.py
-build_analysis.py
-new_zoom_planner.py
-custom_renderer.py
+PACING      -> conservative pause cleanup
+SEMANTICS   -> WHY + block + accent + semantic importance
+ENERGY      -> camera trajectory: rise / hold / fall / release
+CADENCE     -> guard rail only when the picture stays static too long
+MOTION      -> STEP or selective SLOW_PUSH
+SAFETY      -> may reduce or veto every requested crop
 ```
 
-If a canonical stage fails:
+## Pause cleanup
+
+Family A preserves timing by default.
+
+Family B:
 
 ```text
-STOP -> diagnose/fix that stage -> rerun it
+cut_threshold_ms = 450
+target_gap_ms     = 450
 ```
 
-Do not bypass it with ad-hoc code.
+So pauses `<=450 ms` remain intact and longer pauses are shortened to about `450 ms`.
+Spoken words are never removed.
 
-`render_zoom.py` requires a PASS receipt from `pipeline_guard.py pre-render`. `--unsafe-bypass-pipeline-lock` is debug/test only.
+## Four camera levels
 
----
-
-## 1. Mandatory production pipeline
+The energy profile uses four ordered zoom levels above exact HOME:
 
 ```text
-1. normalize_source.py
-        ↓ normalized.mp4
-
-2. Whisper word timings
-        ↓ raw words
-
-3. speech_cleanup.py
-        ↓ executable FAMILY GATE A/B/C
-        ↓ cleanup_plan.json + dense.mp4 + output_words + content_cuts_ms
-
-4. visual_scan.py
-        ↓ visual_scan.json + observations
-
-5. AGENT SEMANTIC PASS
-        ↓ semantic_marks.json
-        WHY + optional bounded performance evidence
-
-6. semantic_events.py
-        ↓ exact dense-timeline semantic_events.json
-
-7. assemble analysis.json
-        ↓ source + observations + semantic_events + content_cuts_ms
-
-8. zoom_planner.py
-        ↓ zoom_plan.json
-
-9. simple_qc.py --output-json pre_qc.json
-        ↓ MUST PASS
-
-10. visual_evidence.py dense.mp4 ... --phase pre
-        ↓ extracted real frames
-
-11. AGENT/HUMAN VISUAL REVIEW
-        ↓ pre_visual_review.json
-
-12. pipeline_guard.py pre-render
-        ↓ pre_guard.json MUST PASS
-
-13. render_zoom.py --guard-report pre_guard.json
-        ↓ final.mp4
-
-14. post_render_qc.py --output-json post_qc.json
-        ↓ actual-pixel QC MUST PASS
-
-15. visual_evidence.py final.mp4 ... --phase final
-        ↓ final frames
-
-16. AGENT/HUMAN FINAL VISUAL REVIEW
-        ↓ final_visual_review.json
-
-17. pipeline_guard.py final
-        ↓ final_guard.json MUST PASS
+HOME = 1.00
+Z1   = 1.03   subtle attention refresh
+Z2   = 1.05   light build
+Z3   = 1.08   semantic / energy punch
+Z4   = 1.12   strong semantic peak / payoff
 ```
 
-No omitted mandatory stage may be described as a successful production run.
+`1.12` is the profile artistic maximum. Existing geometry/headroom/quality checks may reduce it further.
+Synthetic energy events may shape only Z1-Z3; they may never manufacture Z4.
+Z4 still requires a real semantic peak (`raw semantic_importance >=0.90`, `peak`, or `ratchet_3`).
 
----
+## Semantic contract
 
-## 2. What counts as watching the video
-
-These do **not** count as visual review:
+For every important non-release semantic mark (`raw importance >=0.40`):
 
 ```text
-ffprobe
-Whisper
-RMS/silence detection
-JSON inspection
+WHY + block_id + accent_word are mandatory
 ```
 
-Valid visual evidence has two layers:
+`block_id` groups one coherent thought. `accent_word` is the semantic target.
+The agent owns WHY; deterministic code owns the exact safe millisecond and crop.
 
-### Machine perception
+## Editorial energy
 
-`visual_scan.py` samples the actual dense video and measures face geometry, eye line when available, blur, motion and crop-safety signals. MediaPipe FaceMesh is preferred; OpenCV face detection is fallback.
+The director derives a lightweight `editorial_energy` value from the already available semantic importance, direction and bounded performance salience.
+It does **not** claim to measure real viewer attention.
 
-### Actual selected-frame review
-
-`visual_evidence.py` extracts frames around every content jumpcut, visible semantic reframe and return-to-context change. A vision-capable agent or human must open those images and write the review receipt.
-
-Do not fabricate review receipts from filenames or metadata.
-
----
-
-## 3. Pacing: executable family gate
-
-The old v1.7.4 error was making `250 ms` a global default while family classification existed only in prose. v1.7.5 moves the gate into `speech_cleanup.py`.
-
-### Family A — dense
-
-Recognize conservatively from RAW word gaps. If AUTO is ambiguous, choose A.
-
-Default:
+Think of the curve as:
 
 ```text
-pause_cleanup_enabled = false
+energy rising quickly  -> STEP punch
+energy rising steadily -> SLOW_PUSH toward a higher level
+energy roughly flat    -> HOLD / keep current framing
+energy falling a little-> move to a lower zoom level
+energy falling strongly-> release toward HOME
 ```
 
-Do not create jumpcuts merely for cadence. Dense speech can have zero `content_cuts_ms`.
-
-### Family B — air
-
-Repeated real gaps trigger Family B. Canonical default:
+Small falls therefore do not force HOME every time. A sequence may naturally breathe:
 
 ```text
-cut_threshold_ms = 250
-target_gap_ms = 180
+1.00 -> 1.03 -> 1.05 -> 1.08 -> 1.05 -> 1.03 -> 1.00
 ```
 
-Strict cleanup removes dead air only; never words, fillers or false starts.
-
-### Family C — explicit second-take / CTA case
-
-C is owner-supplied, not guessed from taste. Body cleanup is off by default. Do not invent a CTA or a second take.
-
-### Fail-safe AUTO classifier
-
-AUTO chooses B only with repeated air:
+or continue upward when the argument builds:
 
 ```text
->= 2 gaps > 450 ms
-OR
->= 4 gaps > 300 ms
+1.00 -> 1.03 -> 1.05 -> 1.08 -> 1.12
 ```
 
-Otherwise A.
+## Mandatory opening motion: first 5 seconds
 
-One isolated long pause is ambiguous and stays A unless the user/config explicitly requests cleanup.
-
-### Acoustic refinement
-
-v1.7.4 mentioned RMS/VAD correction but had no canonical implementation. v1.7.5 explicitly **does not improvise** one. Until a tested acoustic boundary detector exists, word timings remain authoritative. Do not create a custom RMS cutter during production.
-
----
-
-## 4. Semantic Director: WHY first, performance only amplifies
-
-The agent owns semantic marks, not milliseconds.
-
-Required:
-
-```json
-{
-  "start_word": 10,
-  "end_word": 16,
-  "importance": 0.72,
-  "why": "main contrast / thesis payoff"
-}
-```
-
-Optional:
-
-```json
-{
-  "direction": "build|peak|release|neutral|ratchet_1|ratchet_2|ratchet_3",
-  "motion_hint": "auto|step|slow_push",
-  "zoom_duration_type": "micro_punch|beat|argument_hold",
-  "performance_emphasis": 0.85,
-  "performance_evidence": "speaker leans toward camera and delivery energy rises"
-}
-```
-
-### Valid WHY
-
-Typical semantic marks:
-
-- thesis after setup;
-- antithesis/correction;
-- payoff after a number/formula;
-- warning/consequence;
-- conclusion/punchline;
-- explicit list escalation;
-- example -> conclusion.
-
-Not WHY by itself:
-
-- elapsed time;
-- gaze/head return;
-- a jumpcut;
-- bare number;
-- setup/bridge line;
-- CTA/link-in-bio;
-- “it has been a while since the last zoom”.
-
-Opening setup and closing CTA are normally exact home `1.00x` unless their content is itself the thesis/payoff.
-
-### Performance-aware salience
-
-Early v1.x benefited from HOW the speaker delivered a line. v1.7.5 restores that only as a bounded amplifier.
-
-Rules:
-
-1. performance never creates a mark;
-2. semantic `importance < 0.40` gets **zero** performance bonus;
-3. performance must include evidence from actual visual/prosodic inspection;
-4. maximum bonus is `+0.08 importance`;
-5. gaze or head motion by itself is not a reason.
-
-So:
+The first five seconds must not remain visually dead.
+The director tries to create a low-level rising intro ramp around:
 
 ```text
-semantic 0.80 + strong delivery -> at most 0.88
-semantic 0.30 + dramatic head move -> remains 0.30
+~0.8 s -> Z1 / 1.03
+~3.9 s -> Z2 / 1.05
 ```
 
-This lets HOW strengthen WHAT without returning to random movement-driven zooms.
+These are **targets, not blind timer cuts**. If a real semantic event exists nearby, it replaces the synthetic intro beat.
+The opening ramp uses SLOW_PUSH when safe, so energy visibly builds instead of jumping randomly.
 
----
+Visual safety remains higher priority. If no safe crop/boundary exists, the movement may be vetoed and must be reported by diagnostics rather than forced through a bad frame.
 
-## 5. Gold-lite visual language
+## After 5 seconds: energy first, cadence second
 
-The v1.7.4 scale reduction is retained and made more conservative.
+The old `3 / 4.5 / 6 s` rule is now a guard rail, not the reason for a zoom:
 
 ```text
-CONTEXT     1.00x  exact source/home; majority of runtime
-ARGUMENT    1.08x  normal semantic punch
-EMPHASIS    1.12x  strong peak
-RATCHET_1   1.08x
-RATCHET_2   1.12x
-RATCHET_3   1.13x  explicit list climax only
-ABS HARD CAP 1.13x
+<3.0 s   normally avoid another visible framing change
+~4.5 s   useful checkpoint / preferred breathing interval
+>6.0 s   if nothing meaningful happened, allow a low-level cadence refresh
 ```
 
-`ARGUMENT` is **1.08**, not “1.06–1.10”. Geometry may reduce a requested scale, never silently enlarge it above the state/style/global cap. Source resolution never raises the artistic hard cap above `1.13x`.
+The director inserts sparse energy checkpoints roughly every `4.5 s` only when there is no nearby real semantic event.
+At each checkpoint it estimates the curve between surrounding semantic points:
 
-Actual crop still obeys:
+- rising energy -> move closer;
+- falling energy -> step down one level or release HOME;
+- flat energy -> HOLD when the framing already fits;
+- no future semantic energy -> gradually decay toward a calmer framing.
 
-- source geometry;
-- face size/travel;
-- **segment-wide headroom >= 5%**;
-- quality cap;
-- state/style cap;
-- gesture/prop/caption safety.
+Existing cadence Z1/Z2 remains a final fallback for unusually long static gaps.
 
-### Restored segment-wide headroom invariant
+## Motion
 
-Headroom is an active composition rule, not merely an emergency rejection after the crop is chosen.
+STEP remains correct for sharp peaks/payoffs.
+SLOW_PUSH is preferred for gradual energy rise and opening/build moments.
 
-For every visible framing episode, sample `hair_top` across the whole anticipated shot and use the highest head position:
+Target slow push:
 
 ```text
-hair_top_segment = min(hair_top[t] across the framing episode)
-required_headroom = 0.05 * crop_height
-Y_crop = min(Y_eye_anchor, hair_top_segment_px - required_headroom)
+transition ~= 2.0 s
+settle     >= 0.5 s
 ```
 
-Then clamp the crop to source bounds and run normal face/gesture safety checks.
+The renderer uses eased interpolation, so slow push accelerates/decelerates smoothly instead of moving linearly.
+If there is not enough room for a useful push plus settle, fall back to STEP.
 
-Meaning:
+## Continuity
 
-- keep at least about **5% of output-frame height above the hair** throughout the shot;
-- if the desired zoom cannot preserve that air, prefer a smaller zoom or no zoom;
-- eye-line anchoring remains useful, but headroom has priority when the two conflict;
-- do not chase the face per frame: Tripod Lock still applies within the episode.
-
-4K resolution does not automatically justify a stronger artistic zoom.
-
----
-
-## 6. Motion and dramatic episodes
-
-Primary language:
-
-- `step` — normal semantic punch;
-- `slow_push` — rare, explicit build;
-- `hold` — no framing change.
-
-Gold-lite durations:
+Same `block_id` should develop without HOME chatter.
 
 ```text
-micro_punch     0.5–1.2 s
-beat            1.2–2.0 s
-argument_hold   2.0–2.5 s, rare
+same block + same level -> HOLD
+same block + rising energy -> progress directly upward
+small energy fall -> lower level without mandatory HOME
+large semantic release -> HOME
 ```
 
-### Do not create zoom chatter
+A short HOME flash before the next change is suppressed.
 
-The old wording “prefer many short punches” was too easy to interpret as repeated `home -> punch -> home` chatter.
+## Safety remains unchanged
 
-v1.7.5 rule:
+The inherited planner still enforces:
+
+- Tripod Lock / no per-frame face chasing;
+- global optical and eye-line anchor;
+- face-travel checks;
+- gesture/prop/caption safety;
+- segment-wide headroom;
+- `>=5%` air above hair when evidence exists;
+- blink/blur/pose/motion rejection;
+- quality and crop bounds.
+
+Safety may reduce or veto every energy request.
+
+## Diagnostics
+
+The zoom plan must expose:
 
 ```text
-new semantic block / release -> reset to CONTEXT
-same coherent build -> peak episode -> may sustain tension without flashing home
+editorial_energy_curve
+intro_energy_events_added
+energy_checkpoints_added
+intro_energy_movement
+rhythm_summary
 ```
 
-Examples:
+`editorial_energy_curve` records timestamp, energy, source (`semantic` or `generated`), block and event id.
+Use real rendered Reels later to calibrate the curve; do not pretend this value is measured audience retention.
+
+## QC / guard
+
+Current profile:
 
 ```text
-GOOD: 1.00 -> 1.08 build -> 1.12 peak -> 1.00 release
-GOOD: 1.00 -> short 1.08 punch -> 1.00
-BAD:  1.00 -> 1.08 -> 1.00 -> 1.08 -> 1.00 every clause
+nominal zoom levels = 1.03 / 1.05 / 1.08 / 1.12
+profile max         = 1.12
+normal min gap      ~= 3.0 s
+cadence fallback    ~= 4.5-6.0 s
+slow_push           ~= 2.0 s
+slow_push settle    >= 0.5 s
+Family-B pause      <=450 ms preserved; longer -> ~450 ms
 ```
 
-The planner's continuation/return logic should preserve a coherent episode when adjacent semantic beats belong to the same thought.
-
----
-
-## 7. Density is a ceiling, never a target
-
-Gold references roughly support an upper density around one visible semantic punch per ~7 s averaged across a dense take.
-
-This is **not a quota** and never creates WHY.
-
-```text
-~1 / 7 s = observational ceiling / warning signal
-NOT desired zoom cadence
-```
-
-A 100-second video may legitimately have 5, 8, 12 or fewer punches depending on meaning. Never manufacture events to reach a count.
-
-Visual refresh can also come from real content jumpcuts or a separate caption system. Do not create fake pause cuts or fake zooms merely to refresh the frame.
-
----
-
-## 8. WHEN: safety first
-
-Semantic WHY chooses what deserves an accent. Boundary selection chooses when it is safe.
-
-Hard reject transition points with:
-
-- blink/eye closure;
-- unsafe blur;
-- distorted mouth/face;
-- unsafe head pose/turn;
-- gesture/prop collision;
-- crop/headroom/face-travel violation.
-
-Soft bonuses may include:
-
-- nearby word boundary;
-- pause;
-- head return;
-- cadence fit.
-
-Gaze/head return may improve WHEN but never manufacture WHY.
-
-Tripod Lock remains mandatory inside a hold/episode: do not frame-track the speaker every frame.
-
----
-
-## 9. QC and acceptance
-
-Pre-render `simple_qc.py` remains fail-closed for:
-
-- missing semantics on a normal spoken edit;
-- zero visible framing when semantics expect it;
-- semantic ARGUMENT/EMPHASIS collapsing to a silent no-op;
-- invalid/excessive state scale;
-- declared headroom below the 5% composition floor.
-
-`pipeline_guard.py pre-render` additionally requires:
-
-- cleanup provenance;
-- executable family A/B/C provenance;
-- visual observations;
-- semantic events;
-- zoom plan + pre-QC PASS;
-- complete real visual-review receipt.
-
-Post-render acceptance requires:
-
-- actual-pixel `post_render_qc.py` PASS;
-- final extracted-frame visual review;
-- `pipeline_guard.py final` PASS.
-
-Valid JSON is never proof that the MP4 contains the planned crop.
-
----
-
-## 10. Canonical ownership
-
-```text
-speech_cleanup.py   -> family + pacing
-semantic agent      -> WHY + optional performance evidence
-semantic_events.py  -> deterministic timing + bounded performance bonus
-visual_scan.py      -> machine visual observations
-zoom_planner.py     -> feasible state / timing / crop / motion
-render_zoom.py      -> render only the plan
-QC/guards           -> acceptance evidence
-```
-
-No layer should silently take over another layer's job.
-
----
-
-## 11. Definition of done for v1.7.5
-
-- Family A/B/C is executable, not prose-only.
-- 250 ms is Family-B policy, not a global default.
-- Ambiguous AUTO pacing fails safe to A.
-- No unimplemented RMS/VAD instruction invites ad-hoc cutters.
-- Normal punch is canonical 1.08; strong peak 1.12; ratchet climax max 1.13; **nothing exceeds 1.13x**.
-- Every visible crop preserves **>=5% segment-wide headroom** when `hair_top` evidence is available.
-- Performance can amplify semantic salience but cannot create semantic events.
-- Punch density is a ceiling, never a quota.
-- Coherent build->peak episodes may sustain tension without home-frame chatter.
-- Setup/bridge/CTA stay home unless meaning independently justifies an accent.
-- Canonical pipeline lock, visual evidence and post-render QC remain intact.
+`pipeline_guard.py` continues to accept `1.7.6*` semantic/zoom artifacts and rejects mixed old provenance.
