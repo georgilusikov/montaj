@@ -10,20 +10,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Required semantic episode fields for important non-release marks: `block_id` + `accent_word`; legacy defaults now require explicit compatibility config.
 - Four Reels zoom levels above exact HOME: Z1 1.03, Z2 1.06, Z3 1.09, Z4 1.13.
-- Reels cadence adapter with ~2.0 s minimum, ~3.5 s preferred, ~5.0 s maximum visual-gap target; cadence may create only Z1/Z2.
+- Calmer Reels cadence adapter with ~3.0 s minimum, ~4.5 s preferred, ~6.0 s maximum visual-gap target; cadence may create only Z1/Z2.
 - Rapid-semantic-change coalescing and short-HOME-flash suppression.
-- Slow-push settle requirement (`>=300 ms`) with STEP fallback.
+- Selective automatic slow push for semantic `build` moments: ~2.0 s transition with >=500 ms settle; STEP remains default elsewhere.
 - `rhythm_summary` diagnostics for per-level counts and framing gaps.
 - Pipeline provenance lock for v1.7.6 semantic + zoom artifacts.
 
 ### Changed
+- Family-B pause cleanup now preserves pauses up to 450 ms and clamps longer gaps to about 450 ms instead of aggressively compressing them.
 - Z4 now requires raw semantic importance >=0.90 or explicit `peak` / `ratchet_3`; performance bonus alone may not manufacture the strongest close-up.
-- Visible semantic framing has a ~2 s dwell floor even when the semantic span itself is shorter.
+- Visible semantic framing has a ~3 s dwell floor even when the semantic span itself is shorter.
 - Same block + same zoom level is an explicit HOLD rather than a geometry-dependent re-zoom.
-- Pause cleanup remains intentionally on the unchanged v1.7.5 family policy for isolated zoom/rhythm validation.
+- Slow-push motion is intentionally selective: semantic builds may glide; peaks and cadence refreshes remain STEP by default.
 
 ### Fixed
-- Closed the mismatch where the documented 2–5 s Reels rhythm applied only to cadence filler while semantic zoom returns could still flash after 0.5–1.2 s.
+- Closed the mismatch where the earlier 2–5 s Reels rhythm still felt overly busy in real footage.
+- Closed the over-compressed Family-B pause feel caused by 250 ms-style residual gaps.
 - Closed silent fallback of missing `block_id` / `accent_word` in normal v1.7.6 runs.
 - Restored one canonical hard artistic cap of 1.13 across current docs and QC.
 
