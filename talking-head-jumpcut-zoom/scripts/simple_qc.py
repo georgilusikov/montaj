@@ -48,6 +48,28 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
         float(config.get("absolute_zoom_cap", hard_absolute_cap)), hard_absolute_cap
     )
 
+    # v1.7.6 defaults stay unchanged for the A branch. Experimental/A-B variants may
+    # explicitly declare a different hard floor in the plan config, and QC verifies
+    # against that declared contract instead of silently re-imposing 3000 ms.
+    min_visible_framing_ms = (
+        max(0, int(config.get("hard_change_floor_ms", V176_MIN_VISIBLE_FRAMING_MS)))
+        if is_v176
+        else V176_MIN_VISIBLE_FRAMING_MS
+    )
+    min_slow_push_settle_ms = (
+        max(
+            0,
+            int(
+                config.get(
+                    "slow_push_hard_min_settle_ms",
+                    V176_MIN_SLOW_PUSH_SETTLE_MS,
+                )
+            ),
+        )
+        if is_v176
+        else V176_MIN_SLOW_PUSH_SETTLE_MS
+    )
+
     min_headroom_ratio = max(
         0.0, float(config.get("min_headroom_ratio", DEFAULT_MIN_HEADROOM_RATIO))
     )
@@ -239,13 +261,13 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
             end_ms = int(decision.get("end_ms", start_ms))
             transition_end_ms = int(decision.get("transition_end_ms", start_ms))
             settle_ms = end_ms - transition_end_ms
-            if settle_ms < V176_MIN_SLOW_PUSH_SETTLE_MS:
+            if settle_ms < min_slow_push_settle_ms:
                 errors.append(
                     {
                         "index": index,
                         "check": "slow_push_no_settle",
                         "settle_ms": settle_ms,
-                        "required_ms": V176_MIN_SLOW_PUSH_SETTLE_MS,
+                        "required_ms": min_slow_push_settle_ms,
                     }
                 )
 
@@ -266,12 +288,12 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
             framing_changes, framing_changes[1:]
         ):
             gap_ms = right_ms - left_ms
-            if gap_ms < V176_MIN_VISIBLE_FRAMING_MS:
+            if gap_ms < min_visible_framing_ms:
                 errors.append(
                     {
                         "check": "framing_change_too_fast",
                         "gap_ms": gap_ms,
-                        "required_ms": V176_MIN_VISIBLE_FRAMING_MS,
+                        "required_ms": min_visible_framing_ms,
                         "left": left_id,
                         "right": right_id,
                     }

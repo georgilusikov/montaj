@@ -1,37 +1,40 @@
 ---
 name: talking-head-jumpcut-zoom
-description: 'Автомонтаж вертикальных talking-head Reels/Shorts/TikTok: conservative pause cleanup, editorial-energy camera curve, guaranteed opening motion, four zoom levels, selective slow pushes, semantic continuity, guarded render and visual/pixel QC.'
+description: 'A/B research-aligned talking-head Reels/Shorts/TikTok editor: conservative pause cleanup, semantic target framing, editorial-energy motion, optional opening movement, cadence refresh requests only, four restrained zoom levels, guarded render and visual/pixel QC.'
 ---
 
-# Talking-Head Jumpcut & Zoom Editor v1.7.6 Energy
+# Talking-Head Jumpcut & Zoom Editor v1.7.6 Research-Aligned
 
-## Editorial Energy Director
+## A/B purpose
 
-This remains a **thin evolution of the stable v1.7.6 Reels adapter**, not a planner rewrite.
-The existing v1.7.5/v1.7.6 geometry, visual safety, boundary selection, renderer and QC remain authoritative.
+This branch is the B-variant for comparison with `skill/v1.7.6-semantic-episode`.
+It deliberately changes **directing policy only**. Geometry, headroom, boundary safety,
+renderer, speech cleanup and QC stay inherited from the same v1.7.6 core.
 
-Use the normal pipeline with:
+Core rule:
+
+```text
+SEMANTICS -> target framing
+EDITORIAL ENERGY SLOPE -> motion style
+CADENCE -> diagnostic refresh request only
+SAFETY -> may reduce or veto every crop
+```
+
+`editorial_energy` is not claimed to be measured viewer attention or retention.
+
+## Canonical entry points
 
 ```text
 speech_cleanup.py
 semantic_events_v176.py
-zoom_planner_energy_v176.py   <- canonical zoom entry point
+zoom_planner_energy_v176.py   <- B-variant director
 ```
 
-`zoom_planner_energy_v176.py` wraps `zoom_planner_v176.py`; it does not add another LLM pass or render stage.
-
-## Core ownership
-
-```text
-PACING      -> conservative pause cleanup
-SEMANTICS   -> WHY + block + accent + semantic importance
-ENERGY      -> camera trajectory: rise / hold / fall / release
-CADENCE     -> guard rail only when the picture stays static too long
-MOTION      -> STEP or selective SLOW_PUSH
-SAFETY      -> may reduce or veto every requested crop
-```
+Do not add another LLM pass, renderer, density controller or timeline framework.
 
 ## Pause cleanup
+
+Unchanged from the current v1.7.6 Reels adapter.
 
 Family A preserves timing by default.
 
@@ -42,168 +45,221 @@ cut_threshold_ms = 450
 target_gap_ms     = 450
 ```
 
-So pauses `<=450 ms` remain intact and longer pauses are shortened to about `450 ms`.
-Spoken words are never removed.
-
-## Four camera levels
-
-The energy profile uses four ordered zoom levels above exact HOME:
-
-```text
-HOME = 1.00
-Z1   = 1.03   subtle attention refresh
-Z2   = 1.05   light build
-Z3   = 1.08   semantic / energy punch
-Z4   = 1.12   strong semantic peak / payoff
-```
-
-`1.12` is the profile artistic maximum. Existing geometry/headroom/quality checks may reduce it further.
-Synthetic energy events may shape only Z1-Z3; they may never manufacture Z4.
-Z4 still requires a real semantic peak (`raw semantic_importance >=0.90`, `peak`, or `ratchet_3`).
+Pauses `<=450 ms` remain intact; longer pauses are shortened to about `450 ms`.
+Spoken words are never removed by strict cleanup.
 
 ## Semantic contract
 
 For every important non-release semantic mark (`raw importance >=0.40`):
 
 ```text
-WHY + block_id + accent_word are mandatory
+WHY + block_id + accent_word
 ```
 
-`block_id` groups one coherent thought. `accent_word` is the semantic target.
-The agent owns WHY; deterministic code owns the exact safe millisecond and crop.
+The agent owns WHY and semantic importance. Deterministic code owns the exact safe
+boundary and crop.
 
-## Editorial energy
+`accent_word` is a semantic anchor, not an instruction to cut on one exact frame.
+A safe boundary near the beginning of the accent span may be better than waiting until
+the accented word itself if that gives the visual change time to register.
 
-The director derives a lightweight `editorial_energy` value from the already available semantic importance, direction and bounded performance salience.
-It does **not** claim to measure real viewer attention.
+## Camera levels
 
-Think of the curve as:
+The B profile keeps restrained low levels but restores the user-selected artistic max:
 
 ```text
-energy rising quickly  -> STEP punch
-energy rising steadily -> SLOW_PUSH toward a higher level
-energy roughly flat    -> HOLD / keep current framing
-energy falling a little-> move to a lower zoom level
-energy falling strongly-> release toward HOME
+HOME = 1.00
+Z1   = 1.03
+Z2   = 1.05
+Z3   = 1.08
+Z4   = 1.13
+
+ABS HARD CAP = 1.13
 ```
 
-Small falls therefore do not force HOME every time. A sequence may naturally breathe:
+Exact numeric levels are an A/B calibration choice, not a claimed scientific optimum.
+Geometry may always reduce them.
+
+Z4 remains semantic-only: real strong semantic importance / peak / ratchet climax is
+required. Cadence or editorial-energy diagnostics may never manufacture Z4.
+
+## Editorial energy: motion only
+
+For each **real semantic event**, derive a lightweight `editorial_energy` value from
+existing importance, direction and bounded performance evidence.
+
+Do not overwrite semantic importance with energy.
+
+Therefore:
 
 ```text
-1.00 -> 1.03 -> 1.05 -> 1.08 -> 1.05 -> 1.03 -> 1.00
+semantic importance / role -> HOME / Z1 / Z2 / Z3 / Z4
+energy slope              -> HOW to reach that target
 ```
 
-or continue upward when the argument builds:
+Default motion mapping:
 
 ```text
-1.00 -> 1.03 -> 1.05 -> 1.08 -> 1.12
+gradual rise -> SLOW_PUSH
+sharp rise   -> STEP
+flat         -> HOLD when target already matches; otherwise STEP
+fall         -> STEP to the semantic target / explicit semantic release
+peak/payoff  -> STEP
 ```
 
-## Mandatory opening motion: first 5 seconds
+Energy by itself does not invent a release or a stronger semantic target.
 
-The first five seconds must not remain visually dead.
-The director tries to create a low-level rising intro ramp around:
+## Opening: no mandatory synthetic movement
+
+There is **no required 0.8 s / 3.9 s opening ramp** in this B variant.
 
 ```text
-~0.8 s -> Z1 / 1.03
-~3.9 s -> Z2 / 1.05
+real semantic hook -> frame it normally
+no semantic hook    -> HOME is allowed
 ```
 
-These are **targets, not blind timer cuts**. If a real semantic event exists nearby, it replaces the synthetic intro beat.
-The opening ramp uses SLOW_PUSH when safe, so energy visibly builds instead of jumping randomly.
+An opening may still move when a real semantic `build` or other real semantic event
+justifies it. The absence of camera motion in the first five seconds is not itself an
+error.
 
-Visual safety remains higher priority. If no safe crop/boundary exists, the movement may be vetoed and must be reported by diagnostics rather than forced through a bad frame.
+No synthetic intro semantic events are generated.
 
-## After 5 seconds: energy first, cadence second
+## Cadence: guard rail only
 
-The old `3 / 4.5 / 6 s` rule is now a guard rail, not the reason for a zoom:
+Timing is not WHY.
+
+Use the old Reels rhythm only as a static-gap diagnostic:
 
 ```text
-<3.0 s   normally avoid another visible framing change
-~4.5 s   useful checkpoint / preferred breathing interval
->6.0 s   if nothing meaningful happened, allow a low-level cadence refresh
+~4.5 s  useful checkpoint, not an event
+>6.0 s  emit a refresh_request if the frame stayed static
 ```
 
-The director inserts sparse energy checkpoints roughly every `4.5 s` only when there is no nearby real semantic event.
-At each checkpoint it estimates the curve between surrounding semantic points:
-
-- rising energy -> move closer;
-- falling energy -> step down one level or release HOME;
-- flat energy -> HOLD when the framing already fits;
-- no future semantic energy -> gradually decay toward a calmer framing.
-
-Existing cadence Z1/Z2 remains a final fallback for unusually long static gaps.
-
-## Motion
-
-STEP remains correct for sharp peaks/payoffs.
-SLOW_PUSH is preferred for gradual energy rise and opening/build moments.
-
-Target slow push:
+A `refresh_request` does **not** materialize a zoom.
+Preferred resolution order outside this zoom planner:
 
 ```text
-transition ~= 2.0 s
-settle     >= 0.5 s
+1. real content jumpcut already available
+2. caption / graphic visual change
+3. upcoming semantic framing change
+4. optional weak Z1 only if an editor explicitly chooses it
+5. HOLD is valid
 ```
 
-The renderer uses eased interpolation, so slow push accelerates/decelerates smoothly instead of moving linearly.
-If there is not enough room for a useful push plus settle, fall back to STEP.
+This B branch never converts the timer into synthetic editorial-energy points.
 
-## Continuity
+## Anti-chatter timing
 
-Same `block_id` should develop without HOME chatter.
+The old `3.0 s` rule is no longer a hard semantic-change floor.
+
+```text
+hard visible-change floor ~= 1.2 s
+preferred semantic dwell  ~= 2.4 s
+```
+
+Meaning may justify a real stronger event before three seconds. The hard floor only
+prevents pathological chatter.
+
+Same-block continuity remains authoritative:
 
 ```text
 same block + same level -> HOLD
-same block + rising energy -> progress directly upward
-small energy fall -> lower level without mandatory HOME
-large semantic release -> HOME
+same block + stronger semantic target -> progress directly upward
+short HOME flash before the next event -> suppress
+explicit release / new semantic block -> HOME when appropriate
 ```
 
-A short HOME flash before the next change is suppressed.
+## Slow push and readable settle
 
-## Safety remains unchanged
+Slow push remains selective, not constant camera drift.
 
-The inherited planner still enforces:
+```text
+target transition       ~= 2.0 s
+preferred stable settle ~= 0.9 s
+hard minimum settle     = 0.5 s
+minimum useful push     ~= 1.2 s
+```
+
+If an episode cannot fit a useful push plus at least the hard settle, fall back to STEP.
+When there is enough room, prefer about `0.8–1.2 s` of stable framing after the push.
+
+## Safety and composition
+
+Unchanged from the shared v1.7.6 core:
 
 - Tripod Lock / no per-frame face chasing;
 - global optical and eye-line anchor;
-- face-travel checks;
+- face-travel checks over the whole framing episode;
 - gesture/prop/caption safety;
 - segment-wide headroom;
 - `>=5%` air above hair when evidence exists;
 - blink/blur/pose/motion rejection;
-- quality and crop bounds.
+- quality and crop bounds;
+- artistic hard cap `1.13`.
 
-Safety may reduce or veto every energy request.
+Safety may reduce a requested scale to any smaller safe framing or veto it entirely.
 
-## Diagnostics
+## Diagnostics for the A/B test
 
-The zoom plan must expose:
+The B plan exposes:
 
 ```text
-editorial_energy_curve
-intro_energy_events_added
-energy_checkpoints_added
-intro_energy_movement
+editorial_energy_curve       semantic points only
+generated_energy_events      always 0
+intro_energy_events_added    always 0
+energy_checkpoints_added     always 0
+refresh_requests             cadence diagnostics only
 rhythm_summary
 ```
 
-`editorial_energy_curve` records timestamp, energy, source (`semantic` or `generated`), block and event id.
-Use real rendered Reels later to calibrate the curve; do not pretend this value is measured audience retention.
-
-## QC / guard
-
-Current profile:
+Important config receipts:
 
 ```text
-nominal zoom levels = 1.03 / 1.05 / 1.08 / 1.12
-profile max         = 1.12
-normal min gap      ~= 3.0 s
-cadence fallback    ~= 4.5-6.0 s
-slow_push           ~= 2.0 s
-slow_push settle    >= 0.5 s
-Family-B pause      <=450 ms preserved; longer -> ~450 ms
+editorial_energy_role       = motion_only
+semantic_role               = target_framing
+mandatory_opening_motion    = false
+cadence_materializes_zoom   = false
+hard_change_floor_ms        = 1200
+preferred_semantic_dwell_ms = 2400
+slow_push_preferred_settle_ms = 900
+absolute_zoom_cap           = 1.13
 ```
 
-`pipeline_guard.py` continues to accept `1.7.6*` semantic/zoom artifacts and rejects mixed old provenance.
+## A/B interpretation
+
+Compare the same dense source and the same semantic marks between:
+
+```text
+A = skill/v1.7.6-semantic-episode
+    synthetic opening ramp + generated energy checkpoints
+
+B = skill/v1.7.6-research-aligned
+    semantic-only framing + energy-slope motion + refresh requests only
+```
+
+Do not change subtitles, source take, transcript, semantic marks or export settings
+between A and B. Otherwise the comparison stops isolating directing policy.
+
+Useful measurements:
+
+- visible framing changes per minute;
+- median/minimum gap between changes;
+- number of synthetic vs semantic changes;
+- Z1/Z2/Z3/Z4 counts;
+- slow-push count and settle duration;
+- owner preference on the same clips;
+- later: actual platform retention curves if available.
+
+## Definition of done
+
+- No synthetic opening camera requirement.
+- No synthetic editorial-energy checkpoints.
+- Cadence creates requests, never zoom decisions.
+- Semantic importance chooses framing level.
+- Energy slope chooses motion style only.
+- Sharp peaks remain STEP.
+- Gradual rises may slow-push.
+- Real semantic changes can occur after ~1.2 s instead of waiting for 3 s.
+- Slow pushes prefer ~0.9 s readable settle.
+- Z4 / global artistic cap is 1.13.
+- Existing headroom, geometry, safety, guarded render and QC remain intact.
