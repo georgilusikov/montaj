@@ -1,95 +1,77 @@
 # Talking-Head Jumpcut & Zoom Editor v1.7.6 Lite
 
-## Reels Cadence + Semantic Episode Fix
+## Reels Four-Level Cadence
 
-This version is intentionally a **thin adapter over v1.7.5**, not a planner rewrite.
+This remains a **thin adapter over v1.7.5**, not a planner rewrite.
 
-Read `SKILL_V1_7_5.md` as the base contract. Keep its cleanup, visual scan,
-geometry, rendering, QC and pipeline guards unchanged unless this file explicitly
-overrides a rule.
-
-## Canonical v1.7.6 scripts
-
-Use the normal v1.7.5 pipeline, but replace only these two calls:
+Use the normal v1.7.5 pipeline, replacing only:
 
 ```text
 semantic_events.py -> semantic_events_v176.py
 zoom_planner.py     -> zoom_planner_v176.py
 ```
 
-The original v1.7.5 semantic/planner scripts remain the deterministic core.
-Do not add another orchestration layer.
+No new LLM pass, pause model, renderer, density controller or pipeline stage.
 
-## v1.7.6 behavior changes
-
-1. adjacent semantic marks may share `block_id`;
-2. a semantic mark may specify `accent_word`;
-3. zoom duration comes from the full semantic span and does not shrink when a
-   later safe boundary is selected;
-4. Reels framing uses HOME / SOFT / PUNCH / PEAK / rare CLIMAX targets;
-5. long visual gaps may create a cadence-only SOFT framing refresh.
-
-No new LLM pass, pause model, renderer or planner stage belongs in v1.7.6.
-
-## Semantic mark
-
-Prefer:
-
-```json
-{
-  "start_word": 10,
-  "end_word": 16,
-  "accent_word": 14,
-  "block_id": "argument_02",
-  "importance": 0.72,
-  "why": "main contrast / thesis payoff"
-}
-```
-
-`block_id` = one coherent thought/escalation. Reuse it only for adjacent beats
-of the same thought.
-
-`accent_word` must be inside `start_word..end_word`. The agent chooses the word;
-deterministic code chooses milliseconds and a safe nearby boundary.
-
-Legacy fallback remains valid:
+## Core idea
 
 ```text
-missing block_id    -> event id
-missing accent_word -> start_word
+CADENCE   -> lower zoom levels only
+SEMANTICS -> any level, including strong levels
 ```
 
-## Reels framing grammar
+Cadence keeps a Reels frame alive. Semantics controls strong emphasis.
 
-Requested scales:
+## Framing grammar
+
+Exact source/home frame:
 
 ```text
-HOME        1.00
-SOFT        1.05
-PUNCH       1.11
-PEAK        1.14
-CLIMAX_MAX  1.16
+HOME = 1.00
 ```
 
-These are targets, not guaranteed crops. Existing geometry, quality, face
-travel, gesture/prop safety and segment-wide headroom checks may reduce a
-requested scale or veto it.
-
-Roles:
+Four zoom levels:
 
 ```text
-cadence refresh       -> SOFT only
-semantic build        -> SOFT
-normal semantic punch -> PUNCH
-strong peak/payoff    -> PEAK
-explicit ratchet_3    -> rare CLIMAX, max 1.16
+Z1 = 1.03   subtle refresh
+Z2 = 1.06   clear but light push
+Z3 = 1.09   semantic punch
+Z4 = 1.13   strong peak / payoff
 ```
 
-Cadence must never create PUNCH, PEAK or CLIMAX.
+`1.13` is the hard artistic maximum.
 
-## Reels cadence
+The steps are intentionally not required to be perfectly equal. Existing geometry,
+quality, face travel, gesture/prop safety and segment-wide headroom checks may reduce a
+requested scale. Safe fallbacks may therefore land slightly below the nominal target.
 
-Target visual rhythm:
+## Semantic level selection
+
+Default mapping after the existing bounded performance bonus:
+
+```text
+importance 0.40–0.54 -> Z1
+importance 0.55–0.71 -> Z2
+importance 0.72–0.84 -> Z3
+importance >= 0.85   -> Z4
+```
+
+Direction overrides:
+
+```text
+build / ratchet_1 -> Z2
+ratchet_2         -> Z3
+peak / EMPHASIS   -> Z4
+ratchet_3         -> Z4
+release           -> HOME
+```
+
+Thus an ordinary important point can use Z2/Z3 while Z4 remains reserved for a real
+peak/payoff. Cadence alone can never create Z3 or Z4.
+
+## Cadence frequency
+
+Keep the existing Reels timing window:
 
 ```text
 MIN_CHANGE_GAP       = 2.0 s
@@ -100,54 +82,56 @@ MAX_CHANGE_GAP       = 5.0 s
 Interpretation:
 
 - under ~2 s: normally do not change framing again;
-- ~3–4 s: preferred Reels rhythm;
-- after ~5 s without another visual change: try a SOFT refresh;
-- semantic framing and real content jumpcuts reset the cadence clock;
-- semantic framing always has priority over cadence.
+- around 3–4 s: preferred refresh timing;
+- after ~5 s without a real visual change: try a cadence refresh;
+- semantic framing and content jumpcuts reset the cadence clock;
+- semantic framing always has priority;
+- if no safe crop/boundary exists, HOLD is valid.
 
-Cadence is allowed to materialize only:
+Cadence may use only the lower two levels:
 
 ```text
-HOME -> SOFT
-SOFT -> HOME
+HOME -> Z1 -> Z2 -> Z1 ...
 ```
 
-If a semantic crop is active, cadence does not weaken it. If there is no safe
-visual boundary/crop, HOLD is valid.
+It never escalates itself to Z3/Z4.
 
-The result should often produce roughly 12–20 visible framing changes per
-minute in a static talking-head Reels take, but this is a consequence of the
-2–5 s cadence window, not a hard quota.
+Do **not** hard-code a quota such as “three Z4 shots per minute”. Upper-level frequency
+must follow semantic density. For a typical ~60 s Reels take, the expected shape is:
+
+```text
+overall framing changes: roughly every 2–5 s
+Z1/Z2: most changes
+Z3: several semantic punches when justified
+Z4: a few genuine peaks, possibly only one
+```
+
+These are expectations, not quotas.
 
 ## Semantic episode continuity
 
-If adjacent planned non-context events share `block_id`, suppress the previous
-auto-return when the next planned change follows it closely.
+Adjacent events sharing `block_id` should progress without flashing HOME between beats.
 
-Preferred progression:
-
-```text
-1.00 -> 1.05 -> 1.11 -> 1.14 -> 1.00
-```
-
-Avoid home-frame chatter:
+Preferred:
 
 ```text
-1.00 -> 1.05 -> 1.00 -> 1.11 -> 1.00 -> 1.14 -> 1.00
+1.00 -> Z1/Z2 -> Z3 -> Z4 -> 1.00
 ```
 
-`release`, a new block, or a genuinely separated thought may reset to exact
-HOME framing.
+Avoid:
+
+```text
+1.00 -> zoom -> 1.00 -> zoom -> 1.00 -> zoom
+```
+
+`release`, a new block, or a genuinely separated thought may reset HOME.
 
 ## Accent timing
 
-`semantic_events_v176.py` keeps the full semantic span but centers boundary
-candidates around `accent_word`.
+`accent_word` selects the semantic target. Deterministic code maps it to `accent_ms`
+and chooses a nearby safe visual/word boundary.
 
-`zoom_planner_v176.py` uses `accent_ms` as the target for WHEN.
-
-Visual safety still wins. Blink, blur, unsafe pose, crop, face travel, headroom
-or gesture/prop conflict can move or veto the transition.
+Visual safety can move or veto the change.
 
 ## Duration invariant
 
@@ -155,54 +139,43 @@ or gesture/prop conflict can move or veto the transition.
 semantic_duration_ms = semantic_end_ms - semantic_start_ms
 ```
 
-Duration classification uses that value, never:
-
-```text
-semantic_end_ms - selected_safe_boundary_ms
-```
-
-So WHEN may move without accidentally changing HOW LONG.
+A shifted safe boundary may change WHEN but not HOW LONG.
 
 ## Diagnostics
 
-`zoom_planner_v176.py` writes `rhythm_summary` with:
+`rhythm_summary` reports:
 
-- visible framing change count;
-- semantic strong change count;
-- cadence SOFT change count;
-- semantic episode count;
+- total visible framing changes;
+- semantic vs cadence changes;
+- semantic episodes;
+- `Z1/Z2/Z3/Z4` counts;
 - framing changes per minute;
-- median gap between framing changes;
-- configured 2.0 / 3.5 / 5.0 s cadence values.
+- median gap;
+- configured 2.0 / 3.5 / 5.0 s cadence window.
 
-This is diagnostic. Do not add another density controller in v1.7.6.
+Use these numbers to calibrate real gold Reels later. Do not add a new frequency
+controller until real videos show a repeatable problem.
 
 ## QC
 
-`simple_qc.py` remains backward-compatible with v1.7.5 and recognizes the
-v1.7.6 Reels caps. It additionally fails if a cadence-created refresh exceeds
-SOFT strength (`>~1.05`).
+v1.7.6 QC enforces:
 
-Unresolved cadence opportunities are warnings, not failures: safety/semantics
-may legitimately force HOLD.
+```text
+hard cap = 1.13
+cadence max = Z2 / 1.06
+Z1 <= 1.03
+Z2 <= 1.06
+Z3 <= 1.09
+Z4 <= 1.13
+```
 
-## Explicit non-goals
+Unresolved cadence opportunities remain warnings, not failures.
 
-Do not add in v1.7.6:
-
-- new LLM cadence planner;
-- visual-energy accumulator;
-- rolling density penalties;
-- new pause model;
-- filler deletion;
-- new renderer;
-- extra pipeline stage.
-
-The intended architecture remains:
+## Architecture
 
 ```text
 v1.7.5 core
 + block/accent/duration adapter
-+ small Reels scale/cadence adapter
++ four-level Reels cadence adapter
 = v1.7.6
 ```
