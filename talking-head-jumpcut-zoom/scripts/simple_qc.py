@@ -18,8 +18,8 @@ V176_STATE_CAP = {
 V176_ABSOLUTE_ZOOM_CAP = 1.13
 V176_LEVEL_CAP = {"Z1": 1.03, "Z2": 1.06, "Z3": 1.09, "Z4": 1.13}
 V176_CADENCE_CAP = 1.06
-V176_MIN_VISIBLE_FRAMING_MS = 2000
-V176_MIN_SLOW_PUSH_SETTLE_MS = 300
+V176_MIN_VISIBLE_FRAMING_MS = 3000
+V176_MIN_SLOW_PUSH_SETTLE_MS = 500
 
 DEFAULT_MIN_HEADROOM_RATIO = 0.05
 HEADROOM_TOLERANCE = 0.002
@@ -41,11 +41,19 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
     config = dict(plan.get("config") or {})
 
     is_v176 = str(plan.get("version", "")).startswith("1.7.6")
-    hard_absolute_cap = V176_ABSOLUTE_ZOOM_CAP if is_v176 else DEFAULT_ABSOLUTE_ZOOM_CAP
-    absolute_cap = min(float(config.get("absolute_zoom_cap", hard_absolute_cap)), hard_absolute_cap)
+    hard_absolute_cap = (
+        V176_ABSOLUTE_ZOOM_CAP if is_v176 else DEFAULT_ABSOLUTE_ZOOM_CAP
+    )
+    absolute_cap = min(
+        float(config.get("absolute_zoom_cap", hard_absolute_cap)), hard_absolute_cap
+    )
 
-    min_headroom_ratio = max(0.0, float(config.get("min_headroom_ratio", DEFAULT_MIN_HEADROOM_RATIO)))
-    require_visible_after_ms = int(config.get("require_visible_framing_after_ms", DEFAULT_REQUIRE_VISIBLE_AFTER_MS))
+    min_headroom_ratio = max(
+        0.0, float(config.get("min_headroom_ratio", DEFAULT_MIN_HEADROOM_RATIO))
+    )
+    require_visible_after_ms = int(
+        config.get("require_visible_framing_after_ms", DEFAULT_REQUIRE_VISIBLE_AFTER_MS)
+    )
     allow_no_visible = bool(config.get("allow_no_visible_framing", False))
     semantic_contract_required = bool(config.get("semantic_contract_required", True))
 
@@ -62,32 +70,44 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
     planned = [d for d in decisions if d.get("status") == "PLANNED"]
     visible = [d for d in decisions if _is_visible_change(d)]
     accent_intents = [
-        d for d in decisions
-        if str(d.get("desired_state", d.get("state", "CONTEXT"))).upper() in {"ARGUMENT", "EMPHASIS"}
+        d
+        for d in decisions
+        if str(d.get("desired_state", d.get("state", "CONTEXT"))).upper()
+        in {"ARGUMENT", "EMPHASIS"}
     ]
 
-    if semantic_contract_required and duration_ms >= require_visible_after_ms and not allow_no_visible:
+    if (
+        semantic_contract_required
+        and duration_ms >= require_visible_after_ms
+        and not allow_no_visible
+    ):
         if not decisions:
-            errors.append({
-                "check": "missing_semantic_events",
-                "duration_ms": duration_ms,
-                "reason": "long spoken edit reached zoom QC without semantic decisions",
-            })
+            errors.append(
+                {
+                    "check": "missing_semantic_events",
+                    "duration_ms": duration_ms,
+                    "reason": "long spoken edit reached zoom QC without semantic decisions",
+                }
+            )
         elif not visible:
-            errors.append({
-                "check": "no_visible_framing_changes",
-                "duration_ms": duration_ms,
-                "decision_count": len(decisions),
-                "accent_intent_count": len(accent_intents),
-                "reason": "semantic pass produced zero visible crop/zoom changes",
-            })
+            errors.append(
+                {
+                    "check": "no_visible_framing_changes",
+                    "duration_ms": duration_ms,
+                    "decision_count": len(decisions),
+                    "accent_intent_count": len(accent_intents),
+                    "reason": "semantic pass produced zero visible crop/zoom changes",
+                }
+            )
 
     if accent_intents and not visible:
-        errors.append({
-            "check": "semantic_accent_became_noop",
-            "accent_intent_count": len(accent_intents),
-            "reason": "ARGUMENT/EMPHASIS intent exists but no visible framing decision survived",
-        })
+        errors.append(
+            {
+                "check": "semantic_accent_became_noop",
+                "accent_intent_count": len(accent_intents),
+                "reason": "ARGUMENT/EMPHASIS intent exists but no visible framing decision survived",
+            }
+        )
 
     for index, decision in enumerate(decisions):
         if decision.get("status") != "PLANNED":
@@ -124,42 +144,74 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
                 errors.append({"index": index, "check": "crop_shape", "field": key})
                 continue
             x, y, w, h = crop
-            if w <= 0 or h <= 0 or x < 0 or y < 0 or x + w > width or y + h > height:
-                errors.append({"index": index, "check": "crop_bounds", "field": key, "crop": crop})
+            if (
+                w <= 0
+                or h <= 0
+                or x < 0
+                or y < 0
+                or x + w > width
+                or y + h > height
+            ):
+                errors.append(
+                    {
+                        "index": index,
+                        "check": "crop_bounds",
+                        "field": key,
+                        "crop": crop,
+                    }
+                )
             if any(v % 2 for v in crop):
-                warnings.append({"index": index, "check": "crop_even", "field": key, "crop": crop})
+                warnings.append(
+                    {"index": index, "check": "crop_even", "field": key, "crop": crop}
+                )
             scale = min(width / max(w, 1), height / max(h, 1))
             if scale < 0.999:
-                errors.append({"index": index, "check": "scale_below_1", "field": key, "scale": scale})
+                errors.append(
+                    {
+                        "index": index,
+                        "check": "scale_below_1",
+                        "field": key,
+                        "scale": scale,
+                    }
+                )
             if key == "crop_end":
                 end_scale = scale
 
         declared_scale = decision.get("scale")
         if declared_scale is not None and float(declared_scale) > state_cap + 0.005:
-            errors.append({
-                "index": index,
-                "check": "zoom_too_aggressive",
-                "state": state,
-                "scale": float(declared_scale),
-                "cap": state_cap,
-            })
+            errors.append(
+                {
+                    "index": index,
+                    "check": "zoom_too_aggressive",
+                    "state": state,
+                    "scale": float(declared_scale),
+                    "cap": state_cap,
+                }
+            )
         if end_scale is not None and end_scale > state_cap + 0.01:
-            errors.append({
-                "index": index,
-                "check": "crop_scale_too_aggressive",
-                "state": state,
-                "scale": round(end_scale, 4),
-                "cap": state_cap,
-            })
+            errors.append(
+                {
+                    "index": index,
+                    "check": "crop_scale_too_aggressive",
+                    "state": state,
+                    "scale": round(end_scale, 4),
+                    "cap": state_cap,
+                }
+            )
 
         headroom_ratio = decision.get("headroom_ratio")
-        if headroom_ratio is not None and float(headroom_ratio) + HEADROOM_TOLERANCE < min_headroom_ratio:
-            errors.append({
-                "index": index,
-                "check": "headroom_too_small",
-                "headroom_ratio": float(headroom_ratio),
-                "required": min_headroom_ratio,
-            })
+        if (
+            headroom_ratio is not None
+            and float(headroom_ratio) + HEADROOM_TOLERANCE < min_headroom_ratio
+        ):
+            errors.append(
+                {
+                    "index": index,
+                    "check": "headroom_too_small",
+                    "headroom_ratio": float(headroom_ratio),
+                    "required": min_headroom_ratio,
+                }
+            )
 
         motion = str(decision.get("motion", "hold"))
         if motion != "hold" and decision.get("crop_start") == decision.get("crop_end"):
@@ -168,13 +220,19 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
             errors.append({"index": index, "check": "negative_duration"})
         if state == "CONTEXT" and decision.get("crop_end") != [0, 0, width, height]:
             errors.append({"index": index, "check": "context_not_source_frame"})
-        if is_v176 and bool(decision.get("cadence_refresh")) and float(decision.get("scale", 1.0)) > V176_CADENCE_CAP + 0.005:
-            errors.append({
-                "index": index,
-                "check": "cadence_refresh_too_strong",
-                "scale": float(decision.get("scale", 1.0)),
-                "cap": V176_CADENCE_CAP,
-            })
+        if (
+            is_v176
+            and bool(decision.get("cadence_refresh"))
+            and float(decision.get("scale", 1.0)) > V176_CADENCE_CAP + 0.005
+        ):
+            errors.append(
+                {
+                    "index": index,
+                    "check": "cadence_refresh_too_strong",
+                    "scale": float(decision.get("scale", 1.0)),
+                    "cap": V176_CADENCE_CAP,
+                }
+            )
 
         if is_v176 and motion == "slow_push":
             start_ms = int(decision.get("start_ms", 0))
@@ -182,43 +240,59 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
             transition_end_ms = int(decision.get("transition_end_ms", start_ms))
             settle_ms = end_ms - transition_end_ms
             if settle_ms < V176_MIN_SLOW_PUSH_SETTLE_MS:
-                errors.append({
-                    "index": index,
-                    "check": "slow_push_no_settle",
-                    "settle_ms": settle_ms,
-                    "required_ms": V176_MIN_SLOW_PUSH_SETTLE_MS,
-                })
+                errors.append(
+                    {
+                        "index": index,
+                        "check": "slow_push_no_settle",
+                        "settle_ms": settle_ms,
+                        "required_ms": V176_MIN_SLOW_PUSH_SETTLE_MS,
+                    }
+                )
 
     if is_v176:
         framing_changes: list[tuple[int, str]] = [
             (int(d.get("start_ms", 0)), f"decision:{d.get('event_id')}") for d in visible
         ]
         framing_changes.extend(
-            (int(r.get("start_ms", r.get("end_ms", 0))), f"return:{r.get('parent_event_id')}")
-            for r in returns if r.get("crop_start") != r.get("crop_end")
+            (
+                int(r.get("start_ms", r.get("end_ms", 0))),
+                f"return:{r.get('parent_event_id')}",
+            )
+            for r in returns
+            if r.get("crop_start") != r.get("crop_end")
         )
         framing_changes.sort(key=lambda item: item[0])
-        for (left_ms, left_id), (right_ms, right_id) in zip(framing_changes, framing_changes[1:]):
+        for (left_ms, left_id), (right_ms, right_id) in zip(
+            framing_changes, framing_changes[1:]
+        ):
             gap_ms = right_ms - left_ms
             if gap_ms < V176_MIN_VISIBLE_FRAMING_MS:
-                errors.append({
-                    "check": "framing_change_too_fast",
-                    "gap_ms": gap_ms,
-                    "required_ms": V176_MIN_VISIBLE_FRAMING_MS,
-                    "left": left_id,
-                    "right": right_id,
-                })
+                errors.append(
+                    {
+                        "check": "framing_change_too_fast",
+                        "gap_ms": gap_ms,
+                        "required_ms": V176_MIN_VISIBLE_FRAMING_MS,
+                        "left": left_id,
+                        "right": right_id,
+                    }
+                )
 
     for index, request in enumerate(plan.get("cadence_requests", [])):
         if request.get("semantic_trigger") is not False:
-            errors.append({"index": index, "check": "cadence_request_must_be_nonsemantic"})
-        warnings.append({
-            "index": index,
-            "check": "visual_gap_refresh_unresolved",
-            "at_ms": int(request.get("at_ms", 0)),
-            "preferred_action": request.get("preferred_action", "cadence_low_level_refresh"),
-            "reason": request.get("reason"),
-        })
+            errors.append(
+                {"index": index, "check": "cadence_request_must_be_nonsemantic"}
+            )
+        warnings.append(
+            {
+                "index": index,
+                "check": "visual_gap_refresh_unresolved",
+                "at_ms": int(request.get("at_ms", 0)),
+                "preferred_action": request.get(
+                    "preferred_action", "cadence_low_level_refresh"
+                ),
+                "reason": request.get("reason"),
+            }
+        )
 
     return {
         "version": "1.7.6-lite" if is_v176 else "1.7.5-lite",
@@ -231,14 +305,18 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
         "visible_change_count": len(visible),
         "accent_intent_count": len(accent_intents),
         "cadence_request_count": len(plan.get("cadence_requests", [])),
-        "cadence_low_level_change_count": sum(1 for d in planned if bool(d.get("cadence_refresh"))),
+        "cadence_low_level_change_count": sum(
+            1 for d in planned if bool(d.get("cadence_refresh"))
+        ),
     }
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="QC Montaj v1.7.x Lite crop plan")
     parser.add_argument("plan_json")
-    parser.add_argument("--output-json", help="Persist QC receipt for pipeline_guard.py")
+    parser.add_argument(
+        "--output-json", help="Persist QC receipt for pipeline_guard.py"
+    )
     args = parser.parse_args(argv)
     plan = json.loads(Path(args.plan_json).read_text(encoding="utf-8"))
     report = check(plan)
