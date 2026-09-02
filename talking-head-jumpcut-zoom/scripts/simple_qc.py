@@ -11,11 +11,13 @@ DEFAULT_ABSOLUTE_ZOOM_CAP = 1.13
 
 V176_STATE_CAP = {
     "CONTEXT": 1.00,
-    "SOFT": 1.05,
-    "ARGUMENT": 1.11,
-    "EMPHASIS": 1.14,
+    "SOFT": 1.06,
+    "ARGUMENT": 1.09,
+    "EMPHASIS": 1.13,
 }
-V176_ABSOLUTE_ZOOM_CAP = 1.16
+V176_ABSOLUTE_ZOOM_CAP = 1.13
+V176_LEVEL_CAP = {"Z1": 1.03, "Z2": 1.06, "Z3": 1.09, "Z4": 1.13}
+V176_CADENCE_CAP = 1.06
 
 DEFAULT_MIN_HEADROOM_RATIO = 0.05
 HEADROOM_TOLERANCE = 0.002
@@ -89,21 +91,30 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
             continue
         state = str(decision.get("state", "CONTEXT")).upper()
         state_cap = min(state_caps.get(state, absolute_cap), absolute_cap)
+
+        if is_v176:
+            zoom_level = str(decision.get("zoom_level") or "")
+            if zoom_level in V176_LEVEL_CAP:
+                state_cap = min(state_cap, V176_LEVEL_CAP[zoom_level])
+            declared_decision_cap = decision.get("state_cap")
+            if declared_decision_cap is not None:
+                state_cap = min(state_cap, float(declared_decision_cap), absolute_cap)
+
         ratchet = str(decision.get("ratchet") or "").lower()
         if is_v176:
             if ratchet == "ratchet_1":
-                state_cap = min(max(state_cap, 1.11), absolute_cap)
+                state_cap = min(max(state_cap, 1.06), absolute_cap)
             elif ratchet == "ratchet_2":
-                state_cap = min(max(state_cap, 1.14), absolute_cap)
+                state_cap = min(max(state_cap, 1.09), absolute_cap)
             elif ratchet == "ratchet_3":
-                state_cap = min(max(state_cap, 1.16), absolute_cap)
+                state_cap = min(max(state_cap, 1.13), absolute_cap)
         else:
             if ratchet == "ratchet_2":
                 state_cap = min(max(state_cap, 1.12), absolute_cap)
             elif ratchet == "ratchet_3":
                 state_cap = min(max(state_cap, 1.13), absolute_cap)
-        end_scale = None
 
+        end_scale = None
         for key in ("crop_start", "crop_end"):
             crop = [int(v) for v in decision[key]]
             if len(crop) != 4:
@@ -154,12 +165,12 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
             errors.append({"index": index, "check": "negative_duration"})
         if state == "CONTEXT" and decision.get("crop_end") != [0, 0, width, height]:
             errors.append({"index": index, "check": "context_not_source_frame"})
-        if bool(decision.get("cadence_refresh")) and float(decision.get("scale", 1.0)) > 1.055:
+        if bool(decision.get("cadence_refresh")) and float(decision.get("scale", 1.0)) > V176_CADENCE_CAP + 0.005:
             errors.append({
                 "index": index,
                 "check": "cadence_refresh_too_strong",
                 "scale": float(decision.get("scale", 1.0)),
-                "cap": 1.05,
+                "cap": V176_CADENCE_CAP,
             })
 
     for index, request in enumerate(plan.get("cadence_requests", [])):
@@ -169,7 +180,7 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
             "index": index,
             "check": "visual_gap_refresh_unresolved",
             "at_ms": int(request.get("at_ms", 0)),
-            "preferred_action": request.get("preferred_action", "soft_framing_refresh"),
+            "preferred_action": request.get("preferred_action", "cadence_low_level_refresh"),
             "reason": request.get("reason"),
         })
 
@@ -184,7 +195,7 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
         "visible_change_count": len(visible),
         "accent_intent_count": len(accent_intents),
         "cadence_request_count": len(plan.get("cadence_requests", [])),
-        "cadence_soft_change_count": sum(1 for d in planned if bool(d.get("cadence_refresh"))),
+        "cadence_low_level_change_count": sum(1 for d in planned if bool(d.get("cadence_refresh"))),
     }
 
 
