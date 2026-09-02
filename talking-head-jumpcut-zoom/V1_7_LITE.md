@@ -1,128 +1,110 @@
-# Talking-Head Jumpcut & Zoom Editor v1.7.6 Lite
+# Talking-Head Jumpcut & Zoom Editor v1.7.6 Energy
 
-This is the compact engineering contract. `SKILL.md` is the canonical production-agent instruction.
+`SKILL.md` is the canonical production instruction. This file is the compact engineering contract.
 
 ## Architecture
 
-v1.7.6 remains a thin evolution of the stable v1.7.5 pipeline:
-
 ```text
 normalize -> Whisper -> speech_cleanup -> visual_scan
--> semantic_events_v176 -> zoom_planner_v176 -> QC/review -> render -> pixel/final QC
+-> semantic_events_v176
+-> zoom_planner_energy_v176
+   -> zoom_planner_v176 core
+-> QC/review -> render -> pixel/final QC
 ```
 
-Geometry, renderer and visual evidence remain inherited from v1.7.5. v1.7.6 additionally tunes pause cleanup and Reels rhythm.
+The energy layer is deterministic and adds no LLM pass or renderer stage.
 
 ## Pause policy
 
-Family A preserves timing by default.
+Family B preserves pauses through `450 ms`; longer pauses are reduced to about `450 ms`.
+Family A remains conservative.
 
-Family B:
-
-```text
-cut_threshold_ms = 450
-target_gap_ms     = 450
-```
-
-So pauses up to 450 ms remain intact and longer gaps are reduced to about 450 ms. Spoken words are never removed.
-
-## Reels framing grammar
+## Camera grammar
 
 ```text
 HOME 1.00
 Z1   1.03
-Z2   1.06
-Z3   1.09
-Z4   1.13
-HARD CAP 1.13
+Z2   1.05
+Z3   1.08
+Z4   1.12
+PROFILE CAP 1.12
 ```
 
-Cadence may use only Z1/Z2. Z3 is a semantic punch. Z4 is reserved for raw semantic importance >=0.90 or explicit `peak` / `ratchet_3`.
+Generated editorial-energy events may use only Z1-Z3. Z4 remains semantic-only.
 
-Performance remains a bounded amplifier (+0.08 max) but cannot create WHY or manufacture Z4 by itself.
+## Editorial energy
 
-## Rhythm
+Each real semantic event gets `editorial_energy` in `0..1` from existing effective importance, semantic direction and bounded performance salience.
+The value is an editorial-control signal, not measured viewer attention.
 
 ```text
-minimum visible framing gap: ~3.0 s
-preferred:                   ~4.5 s
-maximum before soft refresh: ~6.0 s
+rise_fast -> STEP upward
+rise      -> SLOW_PUSH upward
+hold      -> keep framing when suitable
+fall      -> lower zoom level
+fall_fast / low energy -> release HOME
 ```
 
-Too-close semantic changes are coalesced; the stronger beat wins. A HOME return that would only flash briefly before the next framing change is suppressed.
+Energy between real semantic events is interpolated. If the clip has no upcoming semantic event, energy slowly decays toward a calmer framing.
 
-## Semantic contract
+## First 5 seconds
 
-For non-release events with raw importance >=0.40:
+Opening cannot remain visually static when a safe crop exists.
+The director targets a low-level rising ramp around:
 
 ```text
-WHY + block_id + accent_word are mandatory
+~0.8 s -> Z1 1.03
+~3.9 s -> Z2 1.05
 ```
 
-Legacy fallbacks are allowed only with explicit `allow_legacy_semantic_defaults=true`.
+Nearby real semantic events replace synthetic intro events.
+Intro movement prefers eased slow push.
 
-`accent_word` owns the semantic target. Safe boundary selection may move WHEN but may not change `semantic_duration_ms`.
-
-## Episode rules
+## Timing guard rail
 
 ```text
-same block + same level -> HOLD
-same block + escalation -> direct Z1/Z2 -> Z3 -> Z4 progression
-new separated thought / release -> HOME when it can remain visible long enough
+normal minimum gap: ~3.0 s
+preferred checkpoint: ~4.5 s
+fallback refresh after: ~6.0 s
 ```
 
-Visible semantic framing has a ~3 s dwell floor.
+This is not the cause of a semantic zoom. Energy/meaning chooses the camera trajectory; cadence only prevents unusually long visual stasis.
+
+After the opening, generated energy checkpoints are considered roughly every `4.5 s` when no real semantic event is nearby.
 
 ## Motion
 
-STEP is the default.
-
-Semantic `build` may automatically become a slow push:
-
 ```text
-transition ~2.0 s
+slow push target ~2.0 s
 settle >=0.5 s
 ```
 
-Peaks and cadence refreshes remain STEP unless explicitly overridden. If there is not enough room for the push plus settle, use STEP.
+Sharp peaks stay STEP. Gradual rises may slow-push.
+
+## Semantic contract
+
+Important non-release marks still require:
+
+```text
+WHY + block_id + accent_word
+```
+
+Raw semantic importance is preserved separately so performance/generated energy cannot manufacture Z4.
 
 ## Safety
 
-The unchanged v1.7.5 core still enforces:
+Inherited v1.7.5/v1.7.6 safety remains authoritative: Tripod Lock, optical/eye-line anchor, face travel, gesture/prop/caption protection, segment-wide headroom, blink/blur/pose/motion rejection and quality/crop bounds.
 
-- Tripod Lock;
-- global optical/eye-line anchor;
-- face travel and crop safety;
-- gesture/prop/caption protection;
-- segment-wide >=5% headroom when hair evidence exists;
-- blur/blink/pose/motion rejection;
-- quality cap.
+## Diagnostics
 
-Safety can reduce or veto every requested zoom.
-
-## Frequency
-
-Do not hard-code a Z4-per-minute quota. `rhythm_summary` records Z1/Z2/Z3/Z4 counts, framing changes/minute, median gap and minimum gap for real-video calibration.
+```text
+editorial_energy_curve
+intro_energy_events_added
+energy_checkpoints_added
+intro_energy_movement
+rhythm_summary
+```
 
 ## Provenance
 
-Production guard requires:
-
-```text
-semantic artifact: 1.7.6*
-zoom plan:         1.7.6*
-pre-QC:            1.7.6* when version is present
-```
-
-Visual scan remains the established 1.7.2-compatible perception stage.
-
-## Intentionally deferred
-
-- semantic/prosodic pause classification;
-- rolling density controller;
-- visual fatigue score;
-- per-level frequency quota;
-- new LLM pass;
-- new renderer/pipeline stage.
-
-Validate this calmer pacing/rhythm profile on real Reels before adding another system.
+Production guard remains compatible because the energy zoom plan reports `1.7.6-energy` and semantic artifacts remain `1.7.6*`.
