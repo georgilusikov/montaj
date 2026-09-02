@@ -1,0 +1,1 @@
+Implementation note: this A/B branch intentionally keeps all shared production stages identical and changes only directing policy. Use `AB_RESEARCH_ALIGNED.md` as the comparison checklist.
