@@ -1,217 +1,170 @@
 ---
 name: talking-head-jumpcut-zoom
-description: 'Автомонтаж вертикальных talking-head Reels/Shorts/TikTok: conservative pause cleanup, semantic zooms with four levels, calmer 3–6 s framing rhythm, selective ~2 s slow pushes, block continuity, accent targeting, guarded render and visual/pixel QC.'
+description: 'Автомонтаж вертикальных talking-head Reels/Shorts/TikTok: conservative pause cleanup, editorial-energy camera curve, guaranteed opening motion, four zoom levels, selective slow pushes, semantic continuity, guarded render and visual/pixel QC.'
 ---
 
-# Talking-Head Jumpcut & Zoom Editor v1.7.6 Lite
+# Talking-Head Jumpcut & Zoom Editor v1.7.6 Energy
 
-## Calmer Reels Four-Level Rhythm
+## Editorial Energy Director
 
-This remains a **thin evolution of v1.7.5**, not a planner rewrite.
-Read `SKILL_V1_7_5.md` for the unchanged production pipeline, visual scan, geometry,
-rendering and review requirements.
+This remains a **thin evolution of the stable v1.7.6 Reels adapter**, not a planner rewrite.
+The existing v1.7.5/v1.7.6 geometry, visual safety, boundary selection, renderer and QC remain authoritative.
 
-Use the normal pipeline, with the v1.7.6 components:
+Use the normal pipeline with:
 
 ```text
-speech_cleanup.py     -> calmer Family-B pause policy
+speech_cleanup.py
 semantic_events_v176.py
-zoom_planner_v176.py
+zoom_planner_energy_v176.py   <- canonical zoom entry point
 ```
 
-`pipeline_guard.py` must see v1.7.6 semantic and zoom artifacts before render.
+`zoom_planner_energy_v176.py` wraps `zoom_planner_v176.py`; it does not add another LLM pass or render stage.
 
 ## Core ownership
 
 ```text
-PACING     -> conservative pause cleanup
-SEMANTICS  -> WHY + block + accent + importance
-CADENCE    -> low-level visual refresh only
-MOTION     -> STEP by default; selected builds may use SLOW_PUSH
-SAFETY     -> may reduce or veto any crop
+PACING      -> conservative pause cleanup
+SEMANTICS   -> WHY + block + accent + semantic importance
+ENERGY      -> camera trajectory: rise / hold / fall / release
+CADENCE     -> guard rail only when the picture stays static too long
+MOTION      -> STEP or selective SLOW_PUSH
+SAFETY      -> may reduce or veto every requested crop
 ```
-
-No new LLM pass, renderer, density controller or pipeline stage belongs in v1.7.6.
 
 ## Pause cleanup
 
-The previous 250 ms-style pacing felt too compressed in real footage.
+Family A preserves timing by default.
 
-Family A remains conservative and preserves timing by default.
-
-Family B now uses:
+Family B:
 
 ```text
 cut_threshold_ms = 450
 target_gap_ms     = 450
 ```
 
-Meaning:
+So pauses `<=450 ms` remain intact and longer pauses are shortened to about `450 ms`.
+Spoken words are never removed.
 
-- pauses `<= 450 ms` are preserved;
-- pauses `> 450 ms` are shortened to about `450 ms`;
-- spoken words are never removed;
-- explicit config may still override threshold/target for experiments.
+## Four camera levels
 
-Family C remains explicit second-take/CTA mode with body cleanup off by default.
-
-## Four zoom levels
+The energy profile uses four ordered zoom levels above exact HOME:
 
 ```text
 HOME = 1.00
-Z1   = 1.03   subtle refresh
-Z2   = 1.06   light push / build
-Z3   = 1.09   semantic punch
-Z4   = 1.13   strong peak / payoff
+Z1   = 1.03   subtle attention refresh
+Z2   = 1.05   light build
+Z3   = 1.08   semantic / energy punch
+Z4   = 1.12   strong semantic peak / payoff
 ```
 
-`1.13` is the hard artistic maximum. Geometry/headroom/quality may reduce a target.
-Safe fallbacks may therefore land slightly below the nominal level.
+`1.12` is the profile artistic maximum. Existing geometry/headroom/quality checks may reduce it further.
+Synthetic energy events may shape only Z1-Z3; they may never manufacture Z4.
+Z4 still requires a real semantic peak (`raw semantic_importance >=0.90`, `peak`, or `ratchet_3`).
 
 ## Semantic contract
 
-For every non-release semantic framing mark with raw `importance >= 0.40`, require:
-
-```json
-{
-  "start_word": 10,
-  "end_word": 16,
-  "accent_word": 14,
-  "block_id": "argument_02",
-  "importance": 0.76,
-  "why": "main correction / payoff"
-}
-```
-
-Rules:
-
-- `block_id` = one coherent thought or escalation;
-- `accent_word` = the word where visual emphasis should land;
-- agent chooses the word, deterministic code chooses milliseconds and a safe boundary;
-- missing `block_id` or `accent_word` is an error by default;
-- old fallback behavior exists only with explicit `allow_legacy_semantic_defaults=true`.
-
-## Level selection
-
-Performance remains the existing bounded `+0.08` amplifier from v1.7.5.
-It may strengthen an existing semantic event, but it cannot create WHY.
-
-Default mapping:
+For every important non-release semantic mark (`raw importance >=0.40`):
 
 ```text
-effective importance <0.55     -> Z1
-effective importance 0.55–0.71 -> Z2
-effective importance 0.72+     -> Z3
+WHY + block_id + accent_word are mandatory
 ```
 
-Z4 is intentionally stricter:
+`block_id` groups one coherent thought. `accent_word` is the semantic target.
+The agent owns WHY; deterministic code owns the exact safe millisecond and crop.
+
+## Editorial energy
+
+The director derives a lightweight `editorial_energy` value from the already available semantic importance, direction and bounded performance salience.
+It does **not** claim to measure real viewer attention.
+
+Think of the curve as:
 
 ```text
-raw semantic_importance >= 0.90
-OR direction == peak
-OR direction == ratchet_3
+energy rising quickly  -> STEP punch
+energy rising steadily -> SLOW_PUSH toward a higher level
+energy roughly flat    -> HOLD / keep current framing
+energy falling a little-> move to a lower zoom level
+energy falling strongly-> release toward HOME
 ```
 
-Therefore performance bonus alone can move Z1→Z2 or Z2→Z3, but cannot manufacture Z4.
-
-Direction overrides:
+Small falls therefore do not force HOME every time. A sequence may naturally breathe:
 
 ```text
-build / ratchet_1 -> Z2
-ratchet_2         -> Z3
-peak / ratchet_3  -> Z4
-release           -> HOME
+1.00 -> 1.03 -> 1.05 -> 1.08 -> 1.05 -> 1.03 -> 1.00
 ```
 
-## Calmer framing rhythm
-
-After real-video review, the earlier 2–5 s cadence was too busy.
-
-New target:
+or continue upward when the argument builds:
 
 ```text
-MIN_CHANGE_GAP       = 3.0 s
-PREFERRED_CHANGE_GAP = 4.5 s
-MAX_CHANGE_GAP       = 6.0 s
+1.00 -> 1.03 -> 1.05 -> 1.08 -> 1.12
 ```
 
-Interpretation:
+## Mandatory opening motion: first 5 seconds
 
-- framing should normally not visibly change again inside ~3 s;
-- ~4–5 s is the preferred rhythm;
-- after ~6 s without another visual change, cadence may add a low-level refresh;
-- semantic framing and content jumpcuts reset the cadence clock;
-- semantic framing has priority over cadence;
-- if no safe boundary/crop exists, HOLD is valid.
-
-Cadence may create only Z1/Z2. It can never create Z3 or Z4.
-
-Very close semantic framing changes are coalesced instead of played as chatter. If two
-candidate framing changes land inside ~3 s, prefer one meaningful change; when one is
-stronger, the stronger semantic beat wins.
-
-## Episode continuity
-
-Same `block_id` should develop without flashing HOME between beats.
-
-Preferred:
+The first five seconds must not remain visually dead.
+The director tries to create a low-level rising intro ramp around:
 
 ```text
-1.00 -> Z1/Z2 -> Z3 -> Z4 -> 1.00
+~0.8 s -> Z1 / 1.03
+~3.9 s -> Z2 / 1.05
 ```
 
-Same block + same zoom level:
+These are **targets, not blind timer cuts**. If a real semantic event exists nearby, it replaces the synthetic intro beat.
+The opening ramp uses SLOW_PUSH when safe, so energy visibly builds instead of jumping randomly.
+
+Visual safety remains higher priority. If no safe crop/boundary exists, the movement may be vetoed and must be reported by diagnostics rather than forced through a bad frame.
+
+## After 5 seconds: energy first, cadence second
+
+The old `3 / 4.5 / 6 s` rule is now a guard rail, not the reason for a zoom:
 
 ```text
-HOLD current framing
+<3.0 s   normally avoid another visible framing change
+~4.5 s   useful checkpoint / preferred breathing interval
+>6.0 s   if nothing meaningful happened, allow a low-level cadence refresh
 ```
 
-A HOME return that would be visible for less than ~3 s before the next framing change
-is suppressed.
+The director inserts sparse energy checkpoints roughly every `4.5 s` only when there is no nearby real semantic event.
+At each checkpoint it estimates the curve between surrounding semantic points:
 
-## Accent and duration
+- rising energy -> move closer;
+- falling energy -> step down one level or release HOME;
+- flat energy -> HOLD when the framing already fits;
+- no future semantic energy -> gradually decay toward a calmer framing.
 
-`accent_word` maps to `accent_ms`; boundary candidates are centered around the accent.
-Visual safety may move or veto the transition.
+Existing cadence Z1/Z2 remains a final fallback for unusually long static gaps.
 
-Keep two separate concepts:
+## Motion
 
-```text
-semantic_duration_ms = semantic span duration
-visual dwell          = how long framing remains visible
-```
+STEP remains correct for sharp peaks/payoffs.
+SLOW_PUSH is preferred for gradual energy rise and opening/build moments.
 
-A shifted safe boundary must never change `semantic_duration_ms`.
-For the calmer Reels profile, visible semantic framing has a minimum dwell of ~3 s.
-
-## Motion: STEP vs SLOW_PUSH
-
-STEP remains the default for punches, peaks and cadence refreshes.
-
-A semantic `build` may automatically use SLOW_PUSH so the camera eases from one
-framing level toward the next instead of jumping instantly.
-
-Preferred slow push:
+Target slow push:
 
 ```text
 transition ~= 2.0 s
 settle     >= 0.5 s
 ```
 
-Examples:
+The renderer uses eased interpolation, so slow push accelerates/decelerates smoothly instead of moving linearly.
+If there is not enough room for a useful push plus settle, fall back to STEP.
+
+## Continuity
+
+Same `block_id` should develop without HOME chatter.
 
 ```text
-HOME 1.00 --2s push--> Z2 1.06 --settle--> hold
-Z2 1.06    --2s push--> Z3 1.09 --settle--> hold
+same block + same level -> HOLD
+same block + rising energy -> progress directly upward
+small energy fall -> lower level without mandatory HOME
+large semantic release -> HOME
 ```
 
-Do not make every zoom a slow push. `peak`, `ratchet` punch and cadence changes remain
-STEP unless explicitly requested otherwise. If there is not enough room for a useful
-slow push plus settle, fall back to STEP.
+A short HOME flash before the next change is suppressed.
 
 ## Safety remains unchanged
 
-The v1.7.5 core still owns:
+The inherited planner still enforces:
 
 - Tripod Lock / no per-frame face chasing;
 - global optical and eye-line anchor;
@@ -219,38 +172,38 @@ The v1.7.5 core still owns:
 - gesture/prop/caption safety;
 - segment-wide headroom;
 - `>=5%` air above hair when evidence exists;
-- blur/blink/pose/motion rejection;
+- blink/blur/pose/motion rejection;
 - quality and crop bounds.
 
-Safety may reduce or veto every requested level, including Z4.
+Safety may reduce or veto every energy request.
 
 ## Diagnostics
 
-`rhythm_summary` reports:
+The zoom plan must expose:
 
-- visible framing changes;
-- semantic vs cadence changes;
-- Z1/Z2/Z3/Z4 counts;
-- changes per minute;
-- median framing gap;
-- minimum framing gap;
-- configured 3.0 / 4.5 / 6.0 s window.
+```text
+editorial_energy_curve
+intro_energy_events_added
+energy_checkpoints_added
+intro_energy_movement
+rhythm_summary
+```
 
-Do not add a hard per-level quota yet. Calibrate frequency from real Reels.
+`editorial_energy_curve` records timestamp, energy, source (`semantic` or `generated`), block and event id.
+Use real rendered Reels later to calibrate the curve; do not pretend this value is measured audience retention.
 
 ## QC / guard
 
-v1.7.6 QC enforces:
+Current profile:
 
 ```text
-hard cap = 1.13
-cadence max = Z2 / 1.06
-Z1 <= 1.03
-Z2 <= 1.06
-Z3 <= 1.09
-Z4 <= 1.13
-framing gap >= ~3.0 s
-slow_push settle >= 500 ms
+nominal zoom levels = 1.03 / 1.05 / 1.08 / 1.12
+profile max         = 1.12
+normal min gap      ~= 3.0 s
+cadence fallback    ~= 4.5-6.0 s
+slow_push           ~= 2.0 s
+slow_push settle    >= 0.5 s
+Family-B pause      <=450 ms preserved; longer -> ~450 ms
 ```
 
-`pipeline_guard.py` rejects mixing old semantic/zoom artifacts with the v1.7.6 run.
+`pipeline_guard.py` continues to accept `1.7.6*` semantic/zoom artifacts and rejects mixed old provenance.
