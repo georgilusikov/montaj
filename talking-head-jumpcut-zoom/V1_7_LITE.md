@@ -4,14 +4,27 @@ This is the compact engineering contract. `SKILL.md` is the canonical production
 
 ## Architecture
 
-v1.7.6 remains a thin Reels adapter over the stable v1.7.5 pipeline:
+v1.7.6 remains a thin evolution of the stable v1.7.5 pipeline:
 
 ```text
-normalize -> Whisper -> speech_cleanup v1.7.5 -> visual_scan
+normalize -> Whisper -> speech_cleanup -> visual_scan
 -> semantic_events_v176 -> zoom_planner_v176 -> QC/review -> render -> pixel/final QC
 ```
 
-Pause cleanup, geometry, renderer and visual evidence are unchanged from v1.7.5.
+Geometry, renderer and visual evidence remain inherited from v1.7.5. v1.7.6 additionally tunes pause cleanup and Reels rhythm.
+
+## Pause policy
+
+Family A preserves timing by default.
+
+Family B:
+
+```text
+cut_threshold_ms = 450
+target_gap_ms     = 450
+```
+
+So pauses up to 450 ms remain intact and longer gaps are reduced to about 450 ms. Spoken words are never removed.
 
 ## Reels framing grammar
 
@@ -31,9 +44,9 @@ Performance remains a bounded amplifier (+0.08 max) but cannot create WHY or man
 ## Rhythm
 
 ```text
-minimum visible framing gap: ~2.0 s
-preferred:                   ~3.5 s
-maximum before soft refresh: ~5.0 s
+minimum visible framing gap: ~3.0 s
+preferred:                   ~4.5 s
+maximum before soft refresh: ~6.0 s
 ```
 
 Too-close semantic changes are coalesced; the stronger beat wins. A HOME return that would only flash briefly before the next framing change is suppressed.
@@ -58,11 +71,20 @@ same block + escalation -> direct Z1/Z2 -> Z3 -> Z4 progression
 new separated thought / release -> HOME when it can remain visible long enough
 ```
 
-Visible semantic framing has a ~2 s dwell floor to prevent short 0.5–1.2 s zoom flashes.
+Visible semantic framing has a ~3 s dwell floor.
 
-## Slow push
+## Motion
 
-Slow push must leave at least 300 ms settled on the target. If there is no room, use STEP.
+STEP is the default.
+
+Semantic `build` may automatically become a slow push:
+
+```text
+transition ~2.0 s
+settle >=0.5 s
+```
+
+Peaks and cadence refreshes remain STEP unless explicitly overridden. If there is not enough room for the push plus settle, use STEP.
 
 ## Safety
 
@@ -80,7 +102,7 @@ Safety can reduce or veto every requested zoom.
 
 ## Frequency
 
-Do not hard-code a Z4-per-minute quota. `rhythm_summary` records Z1/Z2/Z3/Z4 counts, framing changes/minute, median gap and minimum gap for gold-video calibration.
+Do not hard-code a Z4-per-minute quota. `rhythm_summary` records Z1/Z2/Z3/Z4 counts, framing changes/minute, median gap and minimum gap for real-video calibration.
 
 ## Provenance
 
@@ -92,15 +114,15 @@ zoom plan:         1.7.6*
 pre-QC:            1.7.6* when version is present
 ```
 
-The unchanged pacing artifact may remain `1.7.5-lite`; visual scan remains the established 1.7.2-compatible perception stage.
+Visual scan remains the established 1.7.2-compatible perception stage.
 
 ## Intentionally deferred
 
-- per-gap semantic pause rewrite;
+- semantic/prosodic pause classification;
 - rolling density controller;
 - visual fatigue score;
 - per-level frequency quota;
 - new LLM pass;
 - new renderer/pipeline stage.
 
-Validate this zoom/rhythm change on real Reels before adding another system.
+Validate this calmer pacing/rhythm profile on real Reels before adding another system.
