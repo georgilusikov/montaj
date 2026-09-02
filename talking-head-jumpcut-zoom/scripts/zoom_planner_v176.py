@@ -14,28 +14,19 @@ import zoom_planner as core
 VERSION = "1.7.6-lite"
 SAME_BLOCK_CONTINUATION_MS = 1200
 
-# Four zoom levels above exact HOME. Geometry/quality may reduce a target.
 REELS_HOME_SCALE = 1.00
-ZOOM_LEVELS = {
-    "Z1": 1.03,
-    "Z2": 1.06,
-    "Z3": 1.09,
-    "Z4": 1.13,
-}
+ZOOM_LEVELS = {"Z1": 1.03, "Z2": 1.06, "Z3": 1.09, "Z4": 1.13}
 REELS_ABSOLUTE_CAP = ZOOM_LEVELS["Z4"]
 CADENCE_MAX_LEVEL = "Z2"
 
-# Semantic importance -> four-step zoom language.
 Z2_IMPORTANCE = 0.55
 Z3_IMPORTANCE = 0.72
 Z4_IMPORTANCE = 0.85
 
-# Cadence controls refresh timing, not semantic strength.
 MIN_CHANGE_GAP_MS = 2000
 PREFERRED_CHANGE_GAP_MS = 3500
 MAX_CHANGE_GAP_MS = 5000
 
-# Slightly lower safe fallbacks keep the level usable without exceeding its cap.
 LEVEL_FALLBACKS = {
     "Z1": (1.03, 1.02),
     "Z2": (1.06, 1.05, 1.04),
@@ -101,12 +92,6 @@ def _crop_scale(crop: list[int] | tuple[int, int, int, int], width: int, height:
 
 def _is_home_crop(crop: list[int] | tuple[int, int, int, int], width: int, height: int) -> bool:
     return [int(v) for v in crop] == [0, 0, width, height]
-
-
-def _level_for_scale(scale: float) -> str | None:
-    if scale <= 1.005:
-        return None
-    return min(ZOOM_LEVELS, key=lambda level: abs(ZOOM_LEVELS[level] - scale))
 
 
 def _semantic_level(decision: dict[str, Any]) -> str | None:
@@ -185,11 +170,20 @@ def _retarget_semantic_scales(result: dict[str, Any], prepared: dict[str, Any]) 
     window_ms = int(config.get("window_ms", 1200))
     quality_cap = float(prepared.get("source", {}).get("quality_cap", REELS_ABSOLUTE_CAP))
     global_anchor = core._get_global_anchor(observations)
+    event_by_id = {str(event.get("id")): event for event in (prepared.get("semantic_events") or [])}
 
     for decision in result.get("decisions", []):
         if decision.get("status") != "PLANNED":
             continue
-        level = _semantic_level(decision)
+        event = event_by_id.get(str(decision.get("event_id") or ""), {})
+        semantic_context = dict(decision)
+        if "importance" in event:
+            semantic_context["importance"] = event["importance"]
+            decision["importance"] = event["importance"]
+        if "semantic_importance" in event:
+            semantic_context["semantic_importance"] = event["semantic_importance"]
+            decision["semantic_importance"] = event["semantic_importance"]
+        level = _semantic_level(semantic_context)
         if level is None:
             continue
 
@@ -396,7 +390,6 @@ def _fixed_timeline_items(result: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _next_cadence_level(current_scale: float) -> str:
-    # Cadence only breathes between the two lower levels; semantics owns Z3/Z4.
     if current_scale <= 1.005:
         return "Z1"
     if current_scale <= ZOOM_LEVELS["Z1"] + 0.01:
@@ -609,10 +602,7 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
         "preferred_change_gap_ms": PREFERRED_CHANGE_GAP_MS,
         "max_change_gap_ms": MAX_CHANGE_GAP_MS,
     }
-    result["config"]["reels_scales"] = {
-        "HOME": REELS_HOME_SCALE,
-        **ZOOM_LEVELS,
-    }
+    result["config"]["reels_scales"] = {"HOME": REELS_HOME_SCALE, **ZOOM_LEVELS}
     result["config"]["semantic_importance_thresholds"] = {
         "Z2": Z2_IMPORTANCE,
         "Z3": Z3_IMPORTANCE,
