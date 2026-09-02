@@ -13,7 +13,9 @@ ZOOM_VERSION_PREFIX = "1.7.6"
 
 
 def _event_count(semantic: dict[str, Any]) -> int:
-    return int(semantic.get("semantic_event_count", len(semantic.get("semantic_events", []) or [])))
+    return int(
+        semantic.get("semantic_event_count", len(semantic.get("semantic_events", []) or []))
+    )
 
 
 def _reviewed_ids(receipt: dict[str, Any]) -> dict[str, str]:
@@ -39,13 +41,19 @@ def _check_visual_review(
         return
     reviewer = str(receipt.get("reviewer") or receipt.get("review_method") or "").lower()
     if not any(token in reviewer for token in ("vision", "visual", "multimodal", "human")):
-        errors.append({
-            "check": f"{label}_visual_reviewer_missing",
-            "reason": "receipt must identify a vision-capable or human reviewer",
-        })
+        errors.append(
+            {
+                "check": f"{label}_visual_reviewer_missing",
+                "reason": "receipt must identify a vision-capable or human reviewer",
+            }
+        )
     reviewed = _reviewed_ids(receipt)
     missing = [group_id for group_id in required if group_id not in reviewed]
-    rejected = [group_id for group_id in required if reviewed.get(group_id) not in {"PASS", "OK", "ACCEPT"}]
+    rejected = [
+        group_id
+        for group_id in required
+        if reviewed.get(group_id) not in {"PASS", "OK", "ACCEPT"}
+    ]
     if missing:
         errors.append({"check": f"{label}_visual_groups_missing", "group_ids": missing})
     if rejected:
@@ -61,7 +69,9 @@ def _check_family_gate(
 ) -> tuple[str, bool]:
     family = str(cleanup.get("family") or "").upper()
     if family not in {"A", "B", "C"}:
-        errors.append({"check": "family_gate_missing", "reason": "cleanup must record family A/B/C"})
+        errors.append(
+            {"check": "family_gate_missing", "reason": "cleanup must record family A/B/C"}
+        )
         return family, bool(cleanup.get("pause_cleanup_enabled", False))
 
     metrics = cleanup.get("family_metrics")
@@ -73,20 +83,32 @@ def _check_family_gate(
     cfg = dict(cleanup.get("config") or {})
 
     if family in {"A", "C"} and cuts and not cleanup_enabled:
-        errors.append({"check": "dense_family_has_unexplained_content_cuts", "family": family})
+        errors.append(
+            {"check": "dense_family_has_unexplained_content_cuts", "family": family}
+        )
     if family in {"A", "C"} and cleanup_enabled:
-        warnings.append({
-            "check": "dense_family_cleanup_override",
-            "family": family,
-            "reason": "A/C cleanup is allowed only as an explicit override; verify it was intentional",
-        })
+        warnings.append(
+            {
+                "check": "dense_family_cleanup_override",
+                "family": family,
+                "reason": "A/C cleanup is allowed only as an explicit override; verify it was intentional",
+            }
+        )
     if family == "B" and cleanup_enabled:
         threshold = int(cfg.get("cut_threshold_ms", 0) or 0)
         target = int(cfg.get("target_gap_ms", 0) or 0)
-        if not 200 <= threshold <= 350:
-            warnings.append({"check": "family_b_unusual_cut_threshold", "cut_threshold_ms": threshold})
-        if not 120 <= target <= 240:
-            warnings.append({"check": "family_b_unusual_target_gap", "target_gap_ms": target})
+        # v1.7.6 calmer default is 450 -> 450; allow a small tuning band.
+        if not 400 <= threshold <= 500:
+            warnings.append(
+                {
+                    "check": "family_b_unusual_cut_threshold",
+                    "cut_threshold_ms": threshold,
+                }
+            )
+        if not 400 <= target <= 500:
+            warnings.append(
+                {"check": "family_b_unusual_target_gap", "target_gap_ms": target}
+            )
 
     return family, cleanup_enabled
 
@@ -106,23 +128,31 @@ def check_pre_render(
     if not str(cleanup.get("version", "")).startswith("1.7"):
         errors.append({"check": "cleanup_provenance_missing"})
     if not str(semantic.get("version", "")).startswith(SEMANTIC_VERSION_PREFIX):
-        errors.append({
-            "check": "semantic_version_mismatch",
-            "expected": f"{SEMANTIC_VERSION_PREFIX}*",
-            "actual": semantic.get("version"),
-        })
+        errors.append(
+            {
+                "check": "semantic_version_mismatch",
+                "expected": f"{SEMANTIC_VERSION_PREFIX}*",
+                "actual": semantic.get("version"),
+            }
+        )
     if not str(zoom_plan.get("version", "")).startswith(ZOOM_VERSION_PREFIX):
-        errors.append({
-            "check": "zoom_plan_version_mismatch",
-            "expected": f"{ZOOM_VERSION_PREFIX}*",
-            "actual": zoom_plan.get("version"),
-        })
-    if str(pre_qc.get("version", "")).strip() and not str(pre_qc.get("version", "")).startswith(ZOOM_VERSION_PREFIX):
-        errors.append({
-            "check": "pre_qc_version_mismatch",
-            "expected": f"{ZOOM_VERSION_PREFIX}*",
-            "actual": pre_qc.get("version"),
-        })
+        errors.append(
+            {
+                "check": "zoom_plan_version_mismatch",
+                "expected": f"{ZOOM_VERSION_PREFIX}*",
+                "actual": zoom_plan.get("version"),
+            }
+        )
+    if str(pre_qc.get("version", "")).strip() and not str(
+        pre_qc.get("version", "")
+    ).startswith(ZOOM_VERSION_PREFIX):
+        errors.append(
+            {
+                "check": "pre_qc_version_mismatch",
+                "expected": f"{ZOOM_VERSION_PREFIX}*",
+                "actual": pre_qc.get("version"),
+            }
+        )
 
     if not cleanup.get("output_words"):
         errors.append({"check": "cleanup_output_words_missing"})
@@ -130,7 +160,9 @@ def check_pre_render(
         errors.append({"check": "cleanup_content_cuts_missing"})
     family, cleanup_enabled = _check_family_gate(cleanup, errors, warnings)
 
-    allow_no_semantics = bool((semantic.get("config") or {}).get("allow_no_semantic_events", False))
+    allow_no_semantics = bool(
+        (semantic.get("config") or {}).get("allow_no_semantic_events", False)
+    )
     if _event_count(semantic) <= 0 and not allow_no_semantics:
         errors.append({"check": "semantic_events_missing"})
 
@@ -143,7 +175,9 @@ def check_pre_render(
     if coverage < 0.70:
         errors.append({"check": "visual_face_coverage_low", "face_coverage": coverage})
 
-    allow_no_visible = bool((zoom_plan.get("config") or {}).get("allow_no_visible_framing", False))
+    allow_no_visible = bool(
+        (zoom_plan.get("config") or {}).get("allow_no_visible_framing", False)
+    )
     if not zoom_plan.get("decisions") and not allow_no_visible:
         errors.append({"check": "zoom_plan_decisions_missing"})
     if str(pre_qc.get("status", "")).upper() != "PASS":
@@ -159,7 +193,9 @@ def check_pre_render(
         "stage": "pre-render",
         "status": status,
         "pipeline_lock": status,
-        "visual_evidence": "PASS" if not any("visual" in e["check"] for e in errors) else "FAIL",
+        "visual_evidence": (
+            "PASS" if not any("visual" in e["check"] for e in errors) else "FAIL"
+        ),
         "errors": errors,
         "warnings": warnings,
         "evidence": {
@@ -173,7 +209,9 @@ def check_pre_render(
             "face_coverage": coverage,
             "pre_qc_status": pre_qc.get("status"),
             "allow_no_visible_framing": allow_no_visible,
-            "visual_review_group_count": len(visual_manifest.get("required_group_ids", [])),
+            "visual_review_group_count": len(
+                visual_manifest.get("required_group_ids", [])
+            ),
         },
     }
 
@@ -185,7 +223,9 @@ def check_final(
     visual_review: dict[str, Any],
 ) -> dict[str, Any]:
     errors: list[dict[str, Any]] = []
-    if str(pre_guard.get("status", "")).upper() != "PASS" or str(pre_guard.get("pipeline_lock", "")).upper() != "PASS":
+    if str(pre_guard.get("status", "")).upper() != "PASS" or str(
+        pre_guard.get("pipeline_lock", "")
+    ).upper() != "PASS":
         errors.append({"check": "pre_render_guard_not_pass"})
     if str(post_qc.get("status", "")).upper() != "PASS":
         errors.append({"check": "post_render_pixel_qc_not_pass"})
@@ -203,7 +243,9 @@ def check_final(
             "pre_guard_status": pre_guard.get("status"),
             "post_qc_status": post_qc.get("status"),
             "verified_change_count": post_qc.get("verified_change_count"),
-            "visual_review_group_count": len(visual_manifest.get("required_group_ids", [])),
+            "visual_review_group_count": len(
+                visual_manifest.get("required_group_ids", [])
+            ),
         },
     }
 
@@ -221,7 +263,9 @@ def _write_or_print(report: dict[str, Any], output_json: str | None) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Fail-closed Montaj canonical pipeline guard")
+    parser = argparse.ArgumentParser(
+        description="Fail-closed Montaj canonical pipeline guard"
+    )
     sub = parser.add_subparsers(dest="stage", required=True)
 
     pre = sub.add_parser("pre-render")
