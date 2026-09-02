@@ -18,6 +18,8 @@ V176_STATE_CAP = {
 V176_ABSOLUTE_ZOOM_CAP = 1.13
 V176_LEVEL_CAP = {"Z1": 1.03, "Z2": 1.06, "Z3": 1.09, "Z4": 1.13}
 V176_CADENCE_CAP = 1.06
+V176_MIN_VISIBLE_FRAMING_MS = 2000
+V176_MIN_SLOW_PUSH_SETTLE_MS = 300
 
 DEFAULT_MIN_HEADROOM_RATIO = 0.05
 HEADROOM_TOLERANCE = 0.002
@@ -56,6 +58,7 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
     errors: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
     decisions = list(plan.get("decisions", []))
+    returns = list(plan.get("returns", []))
     planned = [d for d in decisions if d.get("status") == "PLANNED"]
     visible = [d for d in decisions if _is_visible_change(d)]
     accent_intents = [
@@ -165,13 +168,46 @@ def check(plan: dict[str, Any]) -> dict[str, Any]:
             errors.append({"index": index, "check": "negative_duration"})
         if state == "CONTEXT" and decision.get("crop_end") != [0, 0, width, height]:
             errors.append({"index": index, "check": "context_not_source_frame"})
-        if bool(decision.get("cadence_refresh")) and float(decision.get("scale", 1.0)) > V176_CADENCE_CAP + 0.005:
+        if is_v176 and bool(decision.get("cadence_refresh")) and float(decision.get("scale", 1.0)) > V176_CADENCE_CAP + 0.005:
             errors.append({
                 "index": index,
                 "check": "cadence_refresh_too_strong",
                 "scale": float(decision.get("scale", 1.0)),
                 "cap": V176_CADENCE_CAP,
             })
+
+        if is_v176 and motion == "slow_push":
+            start_ms = int(decision.get("start_ms", 0))
+            end_ms = int(decision.get("end_ms", start_ms))
+            transition_end_ms = int(decision.get("transition_end_ms", start_ms))
+            settle_ms = end_ms - transition_end_ms
+            if settle_ms < V176_MIN_SLOW_PUSH_SETTLE_MS:
+                errors.append({
+                    "index": index,
+                    "check": "slow_push_no_settle",
+                    "settle_ms": settle_ms,
+                    "required_ms": V176_MIN_SLOW_PUSH_SETTLE_MS,
+                })
+
+    if is_v176:
+        framing_changes: list[tuple[int, str]] = [
+            (int(d.get("start_ms", 0)), f"decision:{d.get('event_id')}") for d in visible
+        ]
+        framing_changes.extend(
+            (int(r.get("start_ms", r.get("end_ms", 0))), f"return:{r.get('parent_event_id')}")
+            for r in returns if r.get("crop_start") != r.get("crop_end")
+        )
+        framing_changes.sort(key=lambda item: item[0])
+        for (left_ms, left_id), (right_ms, right_id) in zip(framing_changes, framing_changes[1:]):
+            gap_ms = right_ms - left_ms
+            if gap_ms < V176_MIN_VISIBLE_FRAMING_MS:
+                errors.append({
+                    "check": "framing_change_too_fast",
+                    "gap_ms": gap_ms,
+                    "required_ms": V176_MIN_VISIBLE_FRAMING_MS,
+                    "left": left_id,
+                    "right": right_id,
+                })
 
     for index, request in enumerate(plan.get("cadence_requests", [])):
         if request.get("semantic_trigger") is not False:
