@@ -17,13 +17,14 @@ Raw footage with multiple retakes → select best takes via multimodal AI inspec
 
 ### 2. [talking-head-jumpcut-zoom](talking-head-jumpcut-zoom/)
 
-Clean source → calmer Reels-oriented semantic framing + selective cadence refresh → final vertical master.
+Clean source → editorial-energy Reels framing → final vertical master.
 
-- Four zoom levels above exact HOME: `1.03 / 1.06 / 1.09 / 1.13`, hard cap `1.13`
-- Calmer framing rhythm: normally ~3–6 s between visible framing changes, preferred ~4.5 s
+- Four energy-directed zoom levels: `1.03 / 1.05 / 1.08 / 1.12`
+- Mandatory safe opening motion in the first ~5 s; real semantics replace synthetic intro beats
+- Editorial-energy curve drives rise / hold / fall / release; cadence is only a ~3–6 s guard rail
 - Family-B pauses: preserve up to ~450 ms; longer gaps compress to about 450 ms
-- Cadence may use only low levels Z1/Z2; strong Z3/Z4 remain semantic
-- Semantic `build` moments may use a ~2 s slow push instead of an instant step
+- Gradual energy rises may use an eased ~2 s slow push; peaks remain STEP
+- Z4 / 1.12 remains semantic-only; generated energy cannot manufacture the strongest close-up
 - Semantic block continuity + accent-word targeting
 - Eye-line / headroom / blink / blur / pose / crop-safety gates
 - Guarded FFmpeg render with visual evidence and post-render pixel QC
