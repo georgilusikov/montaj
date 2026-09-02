@@ -50,21 +50,36 @@ class SpeechCleanupTests(unittest.TestCase):
         self.assertEqual(family, "B")
         self.assertEqual(metrics["gaps_over_450"], 2)
 
-    def test_family_b_default_is_250_to_180(self):
+    def test_family_b_default_preserves_450ms_and_trims_only_longer_pauses(self):
         payload = {
-            "source": {"duration_ms": 4000},
+            "source": {"duration_ms": 4500},
             "config": {"family": "B"},
             "words": [
                 {"text": "one", "start_ms": 200, "end_ms": 500},
-                {"text": "two", "start_ms": 900, "end_ms": 1200},
-                {"text": "three", "start_ms": 1600, "end_ms": 1900},
+                {"text": "two", "start_ms": 1100, "end_ms": 1400},
+                {"text": "three", "start_ms": 2000, "end_ms": 2300},
             ],
         }
         result = plan_cleanup(payload)
         self.assertTrue(result["pause_cleanup_enabled"])
-        self.assertEqual(result["config"]["cut_threshold_ms"], 250)
-        self.assertEqual(result["config"]["target_gap_ms"], 180)
+        self.assertEqual(result["config"]["cut_threshold_ms"], 450)
+        self.assertEqual(result["config"]["target_gap_ms"], 450)
         self.assertEqual(len(result["kept_segments"]), 3)
+        self.assertTrue(all(g["remaining_gap_ms"] == 450 for g in result["removed_gaps"]))
+
+    def test_family_b_pause_at_450_is_not_cut(self):
+        payload = {
+            "source": {"duration_ms": 2500},
+            "config": {"family": "B"},
+            "words": [
+                {"text": "one", "start_ms": 200, "end_ms": 500},
+                {"text": "two", "start_ms": 950, "end_ms": 1250},
+            ],
+        }
+        result = plan_cleanup(payload)
+        self.assertEqual(len(result["kept_segments"]), 1)
+        self.assertEqual(result["removed_gaps"], [])
+        self.assertEqual(result["content_cuts_ms"], [])
 
     def test_long_pause_is_reduced_to_target_gap_when_explicit(self):
         payload = {
@@ -98,7 +113,7 @@ class SpeechCleanupTests(unittest.TestCase):
         self.assertEqual(second["out_start_ms"], first["out_end_ms"])
         self.assertEqual(result["content_cuts_ms"], [second["out_start_ms"]])
 
-    def test_words_are_remapped_to_dense_output_timeline(self):
+    def test_words_are_remapped_to_calmer_dense_output_timeline(self):
         payload = {
             "source": {"duration_ms": 3000},
             "config": {"family": "B"},
@@ -112,7 +127,7 @@ class SpeechCleanupTests(unittest.TestCase):
         self.assertEqual(first["source_start_ms"], 200)
         self.assertEqual(second["source_start_ms"], 1500)
         self.assertLess(second["start_ms"], second["source_start_ms"])
-        self.assertEqual(second["start_ms"] - first["end_ms"], 180)
+        self.assertEqual(second["start_ms"] - first["end_ms"], 450)
 
     def test_family_a_preserves_original_word_timing(self):
         payload = {
@@ -131,7 +146,12 @@ class SpeechCleanupTests(unittest.TestCase):
     def test_head_and_tail_padding_are_kept_when_cleanup_enabled(self):
         payload = {
             "source": {"duration_ms": 3000},
-            "config": {"family": "B", "pause_cleanup_enabled": True, "head_pad_ms": 120, "tail_pad_ms": 350},
+            "config": {
+                "family": "B",
+                "pause_cleanup_enabled": True,
+                "head_pad_ms": 120,
+                "tail_pad_ms": 350,
+            },
             "words": [
                 {"text": "hello", "start_ms": 500, "end_ms": 800},
                 {"text": "world", "start_ms": 1000, "end_ms": 1300},
