@@ -12,23 +12,36 @@ from typing import Any
 import zoom_planner as core
 
 VERSION = "1.7.6-lite"
-
 SAME_BLOCK_CONTINUATION_MS = 1200
 
-# Reels framing grammar. Geometry/quality may only reduce these targets.
+# Four zoom levels above exact HOME. Geometry/quality may reduce a target.
 REELS_HOME_SCALE = 1.00
-REELS_SOFT_SCALE = 1.05
-REELS_PUNCH_SCALE = 1.11
-REELS_PEAK_SCALE = 1.14
-REELS_CLIMAX_SCALE = 1.16
-REELS_ABSOLUTE_CAP = 1.16
+ZOOM_LEVELS = {
+    "Z1": 1.03,
+    "Z2": 1.06,
+    "Z3": 1.09,
+    "Z4": 1.13,
+}
+REELS_ABSOLUTE_CAP = ZOOM_LEVELS["Z4"]
+CADENCE_MAX_LEVEL = "Z2"
 
-# Cadence controls visual refresh, not semantic strength.
+# Semantic importance -> four-step zoom language.
+Z2_IMPORTANCE = 0.55
+Z3_IMPORTANCE = 0.72
+Z4_IMPORTANCE = 0.85
+
+# Cadence controls refresh timing, not semantic strength.
 MIN_CHANGE_GAP_MS = 2000
 PREFERRED_CHANGE_GAP_MS = 3500
 MAX_CHANGE_GAP_MS = 5000
 
-SOFT_FALLBACK_SCALES = (1.05, 1.04, 1.03)
+# Slightly lower safe fallbacks keep the level usable without exceeding its cap.
+LEVEL_FALLBACKS = {
+    "Z1": (1.03, 1.02),
+    "Z2": (1.06, 1.05, 1.04),
+    "Z3": (1.09, 1.08, 1.07),
+    "Z4": (1.13, 1.12, 1.11, 1.10),
+}
 
 
 def _semantic_zoom_duration(event: dict[str, Any], start_ms: int) -> tuple[str, int]:
@@ -90,23 +103,32 @@ def _is_home_crop(crop: list[int] | tuple[int, int, int, int], width: int, heigh
     return [int(v) for v in crop] == [0, 0, width, height]
 
 
-def _target_semantic_scale(decision: dict[str, Any]) -> float:
+def _level_for_scale(scale: float) -> str | None:
+    if scale <= 1.005:
+        return None
+    return min(ZOOM_LEVELS, key=lambda level: abs(ZOOM_LEVELS[level] - scale))
+
+
+def _semantic_level(decision: dict[str, Any]) -> str | None:
     state = str(decision.get("state", "CONTEXT")).upper()
     direction = str(decision.get("direction") or "").lower()
+    importance = float(decision.get("importance", decision.get("semantic_importance", 0.0)) or 0.0)
 
     if state == "CONTEXT" or direction == "release":
-        return REELS_HOME_SCALE
-    if bool(decision.get("soft_build")) or direction == "build":
-        return REELS_SOFT_SCALE
-    if direction == "ratchet_3":
-        return REELS_CLIMAX_SCALE
+        return None
+    if direction == "ratchet_3" or direction == "peak" or state == "EMPHASIS":
+        return "Z4"
     if direction == "ratchet_2":
-        return REELS_PEAK_SCALE
-    if direction == "ratchet_1":
-        return REELS_PUNCH_SCALE
-    if direction == "peak" or state == "EMPHASIS":
-        return REELS_PEAK_SCALE
-    return REELS_PUNCH_SCALE
+        return "Z3"
+    if direction == "ratchet_1" or bool(decision.get("soft_build")) or direction == "build":
+        return "Z2"
+    if importance >= Z4_IMPORTANCE:
+        return "Z4"
+    if importance >= Z3_IMPORTANCE:
+        return "Z3"
+    if importance >= Z2_IMPORTANCE:
+        return "Z2"
+    return "Z1"
 
 
 def _safe_crop_at_scale(
@@ -120,24 +142,19 @@ def _safe_crop_at_scale(
     target_scale: float,
     quality_cap: float,
     global_anchor: tuple[float, float, float],
-    floor_scale: float = 1.0,
+    candidate_scales: tuple[float, ...] | None = None,
 ) -> tuple[float, list[int], float | None] | None:
     if target_scale <= 1.000001:
         return 1.0, [0, 0, width, height], None
 
     rows = core._segment_samples(observations, start_ms, end_ms, window_ms)
     requested = min(float(target_scale), float(quality_cap), REELS_ABSOLUTE_CAP)
-    floor_scale = max(1.0, min(float(floor_scale), requested))
-
-    candidates: list[float] = []
-    scale = requested
-    while scale + 1e-6 >= floor_scale:
-        candidates.append(round(scale, 4))
-        scale -= 0.01
-    if floor_scale not in candidates:
-        candidates.append(round(floor_scale, 4))
+    candidates = candidate_scales or (requested,)
 
     for scale in candidates:
+        scale = min(float(scale), requested)
+        if scale <= 1.000001:
+            continue
         crop = core._crop_for_scale_with_anchor(
             rows,
             width,
@@ -157,10 +174,7 @@ def _safe_crop_at_scale(
     return None
 
 
-def _retarget_semantic_scales(
-    result: dict[str, Any],
-    prepared: dict[str, Any],
-) -> None:
+def _retarget_semantic_scales(result: dict[str, Any], prepared: dict[str, Any]) -> None:
     width = int(result["source"]["width"])
     height = int(result["source"]["height"])
     observations = sorted(list(prepared.get("observations") or []), key=lambda o: int(o["t_ms"]))
@@ -169,24 +183,19 @@ def _retarget_semantic_scales(
 
     config = dict(result.get("config") or {})
     window_ms = int(config.get("window_ms", 1200))
-    quality_cap = float(prepared.get("source", {}).get("quality_cap", 1.16))
+    quality_cap = float(prepared.get("source", {}).get("quality_cap", REELS_ABSOLUTE_CAP))
     global_anchor = core._get_global_anchor(observations)
 
     for decision in result.get("decisions", []):
         if decision.get("status") != "PLANNED":
             continue
-        state = str(decision.get("state", "CONTEXT")).upper()
-        if state == "CONTEXT":
+        level = _semantic_level(decision)
+        if level is None:
             continue
 
-        old_crop = list(decision.get("crop_end") or [0, 0, width, height])
-        old_scale = _crop_scale(old_crop, width, height)
-        target_scale = _target_semantic_scale(decision)
+        target_scale = ZOOM_LEVELS[level]
         start_ms = int(decision.get("start_ms", decision.get("event_ms", 0)))
         end_ms = int(decision.get("end_ms", start_ms))
-
-        # For a soft semantic build, reducing from the old 1.08-ish core state is allowed.
-        floor_scale = 1.0 if target_scale <= REELS_SOFT_SCALE + 1e-6 else old_scale
         safe = _safe_crop_at_scale(
             observations,
             start_ms=start_ms,
@@ -197,7 +206,7 @@ def _retarget_semantic_scales(
             target_scale=target_scale,
             quality_cap=quality_cap,
             global_anchor=global_anchor,
-            floor_scale=floor_scale,
+            candidate_scales=LEVEL_FALLBACKS[level],
         )
         if safe is None:
             continue
@@ -206,20 +215,11 @@ def _retarget_semantic_scales(
         decision["crop_end"] = crop
         decision["scale"] = actual_scale
         decision["headroom_ratio"] = headroom_ratio
+        decision["zoom_level"] = level
+        decision["reels_role"] = level
         decision["reels_target_scale"] = target_scale
         decision["reels_scale_limited"] = actual_scale + 0.005 < target_scale
-        if bool(decision.get("soft_build")) or str(decision.get("direction") or "").lower() == "build":
-            decision["reels_role"] = "SOFT"
-            decision["state_cap"] = REELS_SOFT_SCALE
-        elif target_scale >= REELS_CLIMAX_SCALE - 1e-6:
-            decision["reels_role"] = "CLIMAX"
-            decision["state_cap"] = REELS_CLIMAX_SCALE
-        elif target_scale >= REELS_PEAK_SCALE - 1e-6:
-            decision["reels_role"] = "PEAK"
-            decision["state_cap"] = REELS_PEAK_SCALE
-        else:
-            decision["reels_role"] = "PUNCH"
-            decision["state_cap"] = REELS_PUNCH_SCALE
+        decision["state_cap"] = target_scale
 
 
 def _suppress_same_block_returns(
@@ -325,13 +325,12 @@ def _reels_cadence_requests(
             latest = min(cursor + MAX_CHANGE_GAP_MS, right - MIN_CHANGE_GAP_MS)
             if latest < earliest:
                 break
-            desired = min(cursor + PREFERRED_CHANGE_GAP_MS, latest)
-            desired = max(earliest, desired)
+            desired = max(earliest, min(cursor + PREFERRED_CHANGE_GAP_MS, latest))
             requests.append({
                 "at_ms": int(desired),
                 "window_start_ms": int(earliest),
                 "window_end_ms": int(latest),
-                "preferred_action": "soft_framing_refresh",
+                "preferred_action": "cadence_low_level_refresh",
                 "fallback_action": "hold_if_no_safe_refresh",
                 "semantic_trigger": False,
                 "gap_start_ms": int(cursor),
@@ -362,10 +361,7 @@ def _visual_candidate_ok(row: dict[str, Any]) -> bool:
     return True
 
 
-def _choose_cadence_time(
-    observations: list[dict[str, Any]],
-    request: dict[str, Any],
-) -> int | None:
+def _choose_cadence_time(observations: list[dict[str, Any]], request: dict[str, Any]) -> int | None:
     lo = int(request["window_start_ms"])
     hi = int(request["window_end_ms"])
     desired = int(request["at_ms"])
@@ -399,7 +395,16 @@ def _fixed_timeline_items(result: dict[str, Any]) -> list[dict[str, Any]]:
     return items
 
 
-def _materialize_soft_cadence(
+def _next_cadence_level(current_scale: float) -> str:
+    # Cadence only breathes between the two lower levels; semantics owns Z3/Z4.
+    if current_scale <= 1.005:
+        return "Z1"
+    if current_scale <= ZOOM_LEVELS["Z1"] + 0.01:
+        return "Z2"
+    return "Z1"
+
+
+def _materialize_cadence(
     result: dict[str, Any],
     prepared: dict[str, Any],
     requests: list[dict[str, Any]],
@@ -412,13 +417,12 @@ def _materialize_soft_cadence(
 
     config = dict(result.get("config") or {})
     window_ms = int(config.get("window_ms", 1200))
-    quality_cap = float(prepared.get("source", {}).get("quality_cap", 1.16))
+    quality_cap = float(prepared.get("source", {}).get("quality_cap", REELS_ABSOLUTE_CAP))
     global_anchor = core._get_global_anchor(observations)
     fixed = _fixed_timeline_items(result)
 
     current_crop = [0, 0, width, height]
     fixed_index = 0
-    soft_active = False
     cadence_decisions: list[dict[str, Any]] = []
     unresolved: list[dict[str, Any]] = []
 
@@ -428,12 +432,10 @@ def _materialize_soft_cadence(
             crop_end = fixed[fixed_index]["crop_end"]
             if crop_end:
                 current_crop = list(crop_end)
-                soft_active = False
             fixed_index += 1
 
-        # Cadence may only refresh HOME/SOFT. It never weakens an active semantic crop.
         current_scale = _crop_scale(current_crop, width, height)
-        if not (_is_home_crop(current_crop, width, height) or current_scale <= REELS_SOFT_SCALE + 0.01):
+        if current_scale > ZOOM_LEVELS[CADENCE_MAX_LEVEL] + 0.01:
             unresolved.append(dict(request, reason="semantic_framing_has_priority"))
             continue
 
@@ -442,44 +444,32 @@ def _materialize_soft_cadence(
             unresolved.append(dict(request, reason="no_safe_visual_boundary"))
             continue
 
-        if soft_active or not _is_home_crop(current_crop, width, height):
-            target_scale = REELS_HOME_SCALE
-            target_crop = [0, 0, width, height]
-            headroom_ratio = None
-            target_state = "CONTEXT"
-            role = "SOFT_RETURN"
-        else:
-            safe = None
-            for requested_scale in SOFT_FALLBACK_SCALES:
-                safe = _safe_crop_at_scale(
-                    observations,
-                    start_ms=chosen_ms,
-                    end_ms=chosen_ms + window_ms,
-                    width=width,
-                    height=height,
-                    window_ms=window_ms,
-                    target_scale=requested_scale,
-                    quality_cap=quality_cap,
-                    global_anchor=global_anchor,
-                    floor_scale=requested_scale,
-                )
-                if safe is not None:
-                    break
-            if safe is None:
-                unresolved.append(dict(request, reason="no_safe_soft_crop"))
-                continue
-            target_scale, target_crop, headroom_ratio = safe
-            target_state = "SOFT"
-            role = "SOFT_REFRESH"
+        level = _next_cadence_level(current_scale)
+        safe = _safe_crop_at_scale(
+            observations,
+            start_ms=chosen_ms,
+            end_ms=chosen_ms + window_ms,
+            width=width,
+            height=height,
+            window_ms=window_ms,
+            target_scale=ZOOM_LEVELS[level],
+            quality_cap=quality_cap,
+            global_anchor=global_anchor,
+            candidate_scales=LEVEL_FALLBACKS[level],
+        )
+        if safe is None:
+            unresolved.append(dict(request, reason="no_safe_low_level_crop"))
+            continue
 
+        target_scale, target_crop, headroom_ratio = safe
         cadence_decisions.append({
-            "event_id": f"cadence_soft_{index:03d}",
+            "event_id": f"cadence_{level.lower()}_{index:03d}",
             "event_ms": desired_ms,
             "start_ms": chosen_ms,
             "end_ms": chosen_ms,
             "transition_end_ms": chosen_ms,
             "status": "PLANNED",
-            "state": target_state,
+            "state": "SOFT",
             "base_desired_state": "SOFT",
             "desired_state": "SOFT",
             "direction": "cadence_refresh",
@@ -488,15 +478,15 @@ def _materialize_soft_cadence(
             "crop_start": list(current_crop),
             "crop_end": list(target_crop),
             "scale": round(float(target_scale), 4),
-            "state_cap": REELS_SOFT_SCALE if target_state == "SOFT" else 1.0,
-            "why": "cadence_soft_refresh",
+            "state_cap": ZOOM_LEVELS[level],
+            "why": "cadence_low_level_refresh",
             "semantic_trigger": False,
             "cadence_refresh": True,
-            "reels_role": role,
+            "zoom_level": level,
+            "reels_role": f"CADENCE_{level}",
             "headroom_ratio": headroom_ratio,
         })
         current_crop = list(target_crop)
-        soft_active = target_state == "SOFT"
 
     return cadence_decisions, unresolved
 
@@ -531,25 +521,15 @@ def _rhythm_summary(result: dict[str, Any], events: list[dict[str, Any]]) -> dic
         and str(decision.get("motion", "hold")) != "hold"
         and decision.get("crop_start") != decision.get("crop_end")
     ]
-    return_changes = [
-        ret for ret in result.get("returns", [])
-        if ret.get("crop_start") != ret.get("crop_end")
-    ]
+    return_changes = [ret for ret in result.get("returns", []) if ret.get("crop_start") != ret.get("crop_end")]
     starts = sorted(
         [int(item.get("start_ms", 0)) for item in decision_changes]
         + [int(item.get("start_ms", 0)) for item in return_changes]
     )
     gaps = [right - left for left, right in zip(starts, starts[1:])]
 
-    semantic_visible = [
-        decision for decision in decision_changes
-        if not bool(decision.get("cadence_refresh"))
-        and str(decision.get("state")) != "CONTEXT"
-    ]
-    cadence_visible = [
-        decision for decision in decision_changes
-        if bool(decision.get("cadence_refresh"))
-    ]
+    semantic_visible = [d for d in decision_changes if not bool(d.get("cadence_refresh"))]
+    cadence_visible = [d for d in decision_changes if bool(d.get("cadence_refresh"))]
 
     episodes = 0
     previous_block: str | None = None
@@ -569,12 +549,19 @@ def _rhythm_summary(result: dict[str, Any], events: list[dict[str, Any]]) -> dic
         previous_block = block
         previous_start = start
 
+    level_counts = {level: 0 for level in ZOOM_LEVELS}
+    for decision in decision_changes:
+        level = str(decision.get("zoom_level") or "")
+        if level in level_counts:
+            level_counts[level] += 1
+
     per_min = 0.0 if duration_ms <= 0 else len(starts) * 60000.0 / duration_ms
     return {
         "visible_framing_change_count": len(starts),
-        "semantic_strong_change_count": len(semantic_visible),
-        "cadence_soft_change_count": len(cadence_visible),
+        "semantic_change_count": len(semantic_visible),
+        "cadence_low_level_change_count": len(cadence_visible),
         "semantic_episode_count": episodes,
+        "zoom_level_counts": level_counts,
         "framing_changes_per_min": round(per_min, 2),
         "median_gap_between_framing_changes_ms": int(median(gaps)) if gaps else None,
         "cadence_min_gap_ms": MIN_CHANGE_GAP_MS,
@@ -586,7 +573,6 @@ def _rhythm_summary(result: dict[str, Any], events: list[dict[str, Any]]) -> dic
 def plan(payload: dict[str, Any]) -> dict[str, Any]:
     prepared, events = _prepare_payload(payload)
 
-    # v1.7.5 remains the deterministic semantic core. Only duration ownership is patched.
     original_zoom_duration = core._zoom_duration
     core._zoom_duration = _semantic_zoom_duration
     try:
@@ -594,7 +580,6 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
     finally:
         core._zoom_duration = original_zoom_duration
 
-    # Reels scale grammar is applied with the same v1.7.5 geometry/safety checks.
     _retarget_semantic_scales(result, prepared)
 
     continuation_ms = max(
@@ -611,17 +596,12 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
         decisions=list(result.get("decisions") or []),
         returns=list(result.get("returns") or []),
     )
-    cadence_decisions, unresolved = _materialize_soft_cadence(
-        result,
-        prepared,
-        cadence_requests,
-    )
+    cadence_decisions, unresolved = _materialize_cadence(result, prepared, cadence_requests)
     result.setdefault("decisions", []).extend(cadence_decisions)
     _normalize_timeline_crop_starts(result)
 
-    # Existing cadence_requests now mean only refresh opportunities that could not be materialized.
     result["cadence_requests"] = unresolved
-    result["cadence_soft_changes"] = len(cadence_decisions)
+    result["cadence_low_level_changes"] = len(cadence_decisions)
     result["version"] = VERSION
     result.setdefault("config", {})["same_block_continuation_ms"] = continuation_ms
     result["config"]["reels_cadence"] = {
@@ -631,25 +611,27 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
     }
     result["config"]["reels_scales"] = {
         "HOME": REELS_HOME_SCALE,
-        "SOFT": REELS_SOFT_SCALE,
-        "PUNCH": REELS_PUNCH_SCALE,
-        "PEAK": REELS_PEAK_SCALE,
-        "CLIMAX_MAX": REELS_CLIMAX_SCALE,
+        **ZOOM_LEVELS,
     }
+    result["config"]["semantic_importance_thresholds"] = {
+        "Z2": Z2_IMPORTANCE,
+        "Z3": Z3_IMPORTANCE,
+        "Z4": Z4_IMPORTANCE,
+    }
+    result["config"]["cadence_max_level"] = CADENCE_MAX_LEVEL
     result["config"]["absolute_zoom_cap"] = min(
         REELS_ABSOLUTE_CAP,
         float(prepared.get("source", {}).get("quality_cap", REELS_ABSOLUTE_CAP)),
     )
     result["config"]["state_caps"] = {
         "CONTEXT": REELS_HOME_SCALE,
-        "SOFT": REELS_SOFT_SCALE,
-        "ARGUMENT": REELS_PUNCH_SCALE,
-        "EMPHASIS": REELS_PEAK_SCALE,
+        "SOFT": ZOOM_LEVELS["Z2"],
+        "ARGUMENT": ZOOM_LEVELS["Z3"],
+        "EMPHASIS": ZOOM_LEVELS["Z4"],
     }
     result["same_block_returns_suppressed"] = suppressed
     result["rhythm_summary"] = _rhythm_summary(result, events)
 
-    # Recompute visual-change times including materialized cadence framing.
     visual_times = {0, duration_ms}
     visual_times.update(content_cuts_ms)
     for decision in result.get("decisions", []):
@@ -667,7 +649,7 @@ def plan(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Plan v1.7.6 Reels semantic + cadence framing")
+    parser = argparse.ArgumentParser(description="Plan v1.7.6 Reels four-level semantic + cadence framing")
     parser.add_argument("input_json")
     parser.add_argument("output_json")
     args = parser.parse_args(argv)
